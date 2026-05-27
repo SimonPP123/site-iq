@@ -1,8 +1,8 @@
 name: Post-Deploy Smoke
 
 # Vercel emits a deployment_status to GitHub on every deploy. On a successful PRODUCTION deploy, smoke-test
-# the live URL so a broken deploy surfaces as a red check immediately - not via a user. Preview deploys are
-# skipped on purpose: Vercel Deployment Protection 401s them, which would be a false failure. No secrets used.
+# the stable public alias so a broken deploy surfaces as a red check immediately - not via a user. We hit the
+# alias (NOT the per-deploy environment_url, which Deployment Protection 401s -> false red). No secrets used.
 on:
   deployment_status:
 
@@ -11,11 +11,13 @@ jobs:
     name: Smoke test deployment
     runs-on: ubuntu-latest
     # Only a successful PRODUCTION deployment that exposes a URL (previews are protected -> 401 -> false red).
-    if: ${{ github.event.deployment_status.state == 'success' && github.event.deployment_status.environment == 'Production' && github.event.deployment_status.environment_url != '' }}
+    if: ${{ github.event.deployment_status.state == 'success' && github.event.deployment_status.environment == 'Production' }}
     steps:
       - name: Smoke test public surface
         env:
-          URL: ${{ github.event.deployment_status.environment_url }}
+          # The per-deploy *.vercel.app URL is behind Deployment Protection (401). Hit the stable public
+          # alias instead - it points at the just-promoted production deployment.
+          URL: https://siteiq.monkata.ai
         run: |
           set -uo pipefail
           echo "Smoke-testing $URL"
