@@ -451,7 +451,7 @@ export function ReportView({
             {report.status === "done" &&
               (demo ? (
                 <section className="surface mt-8 p-6 text-center">
-                  <h2 className="text-lg font-semibold">Ask anything about this report</h2>
+                  <h2 className="text-lg font-semibold">AI chat is included with every report</h2>
                   <p className="mx-auto mt-2 max-w-prose text-sm text-muted-foreground">
                     Every report includes an AI chat grounded in the site&apos;s crawled pages - ask why a
                     score is low, what to fix first, or how to action a finding. Sign up to chat with your
