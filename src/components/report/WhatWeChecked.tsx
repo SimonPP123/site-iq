@@ -70,9 +70,13 @@ function CoverageLine({ ratio }: { ratio: number | null }) {
     );
   }
   if (ratio <= 0) {
+    // Polarity-neutral wording. "Not detected" was wrong for "absence-is-good" checks (e.g. "No legacy
+    // Universal Analytics", "robots does not block the whole site"): there a failure means the thing
+    // WAS found, so "Not detected" contradicted both the red Failed status and the fix advice.
+    // "Did not pass" is correct whether the check passes by presence or by absence.
     return (
       <p className="text-muted-foreground">
-        <span className="font-medium text-red-600 dark:text-red-400">Not detected</span> on any sampled page.
+        <span className="font-medium text-red-600 dark:text-red-400">Did not pass</span> on the pages we sampled.
       </p>
     );
   }
