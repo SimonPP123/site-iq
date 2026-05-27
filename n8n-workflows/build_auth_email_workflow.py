@@ -195,8 +195,8 @@ const redirectTo = ed.redirect_to || user.redirect_to || DEFAULT_REDIRECT;
 // Supabase verify URL: <SUPABASE_URL>/auth/v1/verify?token=<token_hash>&type=<type>&redirect_to=<...>
 // NB: the query param is literally named "token" but carries the token_HASH value (per Supabase docs).
 function verifyUrl(tokenHash, type) {
-  const qs = new URLSearchParams({ token: tokenHash || '', type: type || '', redirect_to: redirectTo });
-  return `${SUPABASE_URL}/auth/v1/verify?${qs.toString()}`;
+  const qs = 'token=' + encodeURIComponent(tokenHash || '') + '&type=' + encodeURIComponent(type || '') + '&redirect_to=' + encodeURIComponent(redirectTo);
+  return `${SUPABASE_URL}/auth/v1/verify?${qs}`;
 }
 
 // Per-action copy. Each entry: { subject, heading, intro, cta, type, tokenHash, recipient, outro }.
