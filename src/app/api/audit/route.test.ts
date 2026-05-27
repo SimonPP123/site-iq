@@ -8,6 +8,7 @@ const h = vi.hoisted(() => ({
   from: vi.fn(),
   serviceFrom: vi.fn(),
   rateLimit: vi.fn(),
+  peekRateLimit: vi.fn(),
   normalizeDomain: vi.fn(),
   isPrivateIp: vi.fn(),
   lookup: vi.fn(),
@@ -18,7 +19,7 @@ vi.mock("@/lib/supabase/server", () => ({
   createClient: vi.fn(async () => ({ auth: { getClaims: h.getClaims }, rpc: h.rpc, from: h.from })),
 }));
 vi.mock("@/lib/supabase/service", () => ({ createServiceClient: () => ({ from: h.serviceFrom }) }));
-vi.mock("@/lib/rate-limit", () => ({ rateLimit: h.rateLimit, getRateLimitHeaders: () => ({}) }));
+vi.mock("@/lib/rate-limit", () => ({ rateLimit: h.rateLimit, peekRateLimit: h.peekRateLimit, getRateLimitHeaders: () => ({}) }));
 vi.mock("@/lib/env", () => ({ env: h.env }));
 vi.mock("@/lib/domain", () => ({ normalizeDomain: h.normalizeDomain }));
 vi.mock("@/lib/ssrf", () => ({ isPrivateIp: h.isPrivateIp }));
@@ -54,6 +55,7 @@ beforeEach(() => {
   h.env.GLOBAL_DAILY_AUDIT_CAP = undefined;
   h.getClaims.mockResolvedValue({ data: { claims: { sub: "user-1" } } });
   h.rateLimit.mockResolvedValue(ok());
+  h.peekRateLimit.mockResolvedValue(0);
   h.normalizeDomain.mockReturnValue({ ok: true, domain: "example.com", rootUrl: "https://example.com" });
   h.isPrivateIp.mockReturnValue(false);
   h.lookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
@@ -120,11 +122,33 @@ describe("POST /api/audit", () => {
 
   it("returns 503 when the global daily cap is exhausted", async () => {
     h.env.GLOBAL_DAILY_AUDIT_CAP = 100;
-    h.rateLimit.mockImplementation(async (key: string) =>
-      key === "global:audits" ? ok({ success: false }) : ok(),
-    );
+    h.peekRateLimit.mockResolvedValue(100); // already at the cap
     const res = await POST(req({ domain: "example.com" }));
     expect(res.status).toBe(503);
+  });
+
+  it("fails closed (503) when the global counter is unreachable", async () => {
+    h.env.GLOBAL_DAILY_AUDIT_CAP = 100;
+    h.peekRateLimit.mockResolvedValue(null); // shared Postgres counter down
+    const res = await POST(req({ domain: "example.com" }));
+    expect(res.status).toBe(503);
+  });
+
+  it("consumes a global slot only after the audit starts", async () => {
+    h.env.GLOBAL_DAILY_AUDIT_CAP = 100;
+    h.peekRateLimit.mockResolvedValue(5); // under cap
+    const res = await POST(req({ domain: "example.com" }));
+    expect(res.status).toBe(202);
+    expect(h.rateLimit).toHaveBeenCalledWith("global:audits", 100, 86_400_000);
+  });
+
+  it("does not consume a global slot when the n8n trigger fails", async () => {
+    h.env.GLOBAL_DAILY_AUDIT_CAP = 100;
+    h.peekRateLimit.mockResolvedValue(5);
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500 })));
+    const res = await POST(req({ domain: "example.com" }));
+    expect(res.status).toBe(502);
+    expect(h.rateLimit).not.toHaveBeenCalledWith("global:audits", 100, 86_400_000);
   });
 
   it("returns 429 when the monthly free quota is exhausted (-1)", async () => {

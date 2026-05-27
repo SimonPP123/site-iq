@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { sanitizeErrorMessage, getClientIp } from "@/lib/security";
 import { env } from "@/lib/env";
-import { rateLimit, getRateLimitHeaders } from "@/lib/rate-limit";
+import { rateLimit, getRateLimitHeaders, peekRateLimit } from "@/lib/rate-limit";
 import { FREE_PLAN } from "@/lib/plan";
 import { normalizeDomain } from "@/lib/domain";
 import { isPrivateIp } from "@/lib/ssrf";
@@ -117,13 +117,15 @@ export async function POST(req: Request) {
     );
   }
 
-  // Global daily circuit-breaker: a hard ceiling on total audits/day across ALL users, independent
-  // of per-account quotas, so abuse or a viral spike can't run up an unbounded Firecrawl/OpenAI bill.
+  // Global daily circuit-breaker: a hard ceiling on total audits/day across ALL users, independent of
+  // per-account quotas, so abuse or a viral spike can't run up an unbounded Firecrawl/OpenAI bill. We
+  // only GATE here (read the current count); the slot is consumed once the audit actually starts (after
+  // the n8n ack, below), so rejected attempts (user at quota) and failures (insert / n8n) never erode it.
   if (env.GLOBAL_DAILY_AUDIT_CAP) {
-    // failClosed: if the shared Postgres limiter is down, DENY rather than fall back to per-instance
-    // memory - the global cap must not silently multiply across serverless instances.
-    const globalRl = await rateLimit("global:audits", env.GLOBAL_DAILY_AUDIT_CAP, 86_400_000, true);
-    if (!globalRl.success) {
+    // failClosed: a null count means the shared Postgres counter is unreachable - DENY rather than risk
+    // an unbounded bill (the global cap must not silently disappear).
+    const used = await peekRateLimit("global:audits", 86_400_000);
+    if (used === null || used >= env.GLOBAL_DAILY_AUDIT_CAP) {
       return NextResponse.json(
         { error: "Site IQ is experiencing very high demand right now. Please try again later." },
         { status: 503 },
@@ -203,6 +205,14 @@ export async function POST(req: Request) {
       { error: sanitizeErrorMessage(err, "Could not start the audit") },
       { status: 502 },
     );
+  }
+
+  // The audit has actually started (n8n acked) - consume the global daily slot now. Counting only
+  // started audits (not rejected/failed attempts) keeps the ceiling honest; a small over-count under
+  // a concurrent burst is acceptable for a soft safety cap. Best-effort, so a counter blip can never
+  // fail an audit that already started.
+  if (env.GLOBAL_DAILY_AUDIT_CAP) {
+    await rateLimit("global:audits", env.GLOBAL_DAILY_AUDIT_CAP, 86_400_000);
   }
 
   return NextResponse.json({ reportId: report.id }, { status: 202 });

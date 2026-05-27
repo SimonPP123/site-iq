@@ -123,6 +123,32 @@ export async function rateLimit(
   return inMemoryRateLimit(identifier, limit, windowMs);
 }
 
+/**
+ * Read the current count for a bucket WITHOUT consuming a slot, so a cost ceiling can be GATED on the
+ * way in and the slot consumed (via rateLimit) only once the work actually starts - rejected or failed
+ * attempts then never erode the ceiling. Returns the current count, or null when the shared Postgres
+ * backend is unavailable so the caller can fail CLOSED for a cost-critical cap. Returns 0 in dev (the
+ * global cap is a production concern; there is no shared counter to read).
+ */
+export async function peekRateLimit(identifier: string, windowMs: number): Promise<number | null> {
+  if (!usesServerBackend()) return 0;
+  const admin = createServiceClient();
+  if (!admin) return 0;
+  const { data, error } = await admin.rpc("peek_rate_limit", {
+    p_key: identifier,
+    p_window_ms: windowMs,
+  });
+  if (error) {
+    if (!warnedNoBackend) {
+      warnedNoBackend = true;
+      console.error("[rate-limit] postgres peek unavailable:", error.message);
+      Sentry.captureMessage(`rate-limit peek backend unavailable: ${error.message}`, "warning");
+    }
+    return null;
+  }
+  return Number(data ?? 0);
+}
+
 /** Standard rate-limit response headers. `Retry-After` is set only when the request was limited. */
 export function getRateLimitHeaders(result: RateLimitResult): Record<string, string> {
   const headers: Record<string, string> = {
