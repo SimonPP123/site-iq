@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 const PLAN_LABEL: Record<string, string> = { pro: "Pro", agency: "Agency" };
-const TOPICS = ["General question", "Pro plan", "Agency plan", "Bug report", "Feedback", "Partnership"] as const;
+const TOPICS = ["General question", "Pro plan", "Agency plan", "Help with my site", "Bug report", "Feedback", "Partnership"] as const;
 const inputCls =
   "mt-1.5 w-full rounded-lg border border-border bg-card/70 px-3 py-2.5 text-sm outline-none transition focus:border-accent/70 focus:ring-2 focus:ring-accent/40";
 
@@ -17,12 +17,22 @@ export function ContactForm() {
   const params = useSearchParams();
   const planParam = params.get("plan");
   const plan = planParam === "pro" || planParam === "agency" ? planParam : undefined;
+  // From the report "get help" CTA: ?topic=audit&domain=<d> pre-fills an audit-help message.
+  const auditDomain = params.get("topic") === "audit" ? (params.get("domain") || "").trim().slice(0, 255) : "";
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [company, setCompany] = useState("");
-  const [topic, setTopic] = useState<string>(plan ? `${PLAN_LABEL[plan]} plan` : "General question");
-  const [message, setMessage] = useState(plan ? `I'm interested in the ${PLAN_LABEL[plan]} plan. ` : "");
+  const [topic, setTopic] = useState<string>(
+    plan ? `${PLAN_LABEL[plan]} plan` : auditDomain ? "Help with my site" : "General question",
+  );
+  const [message, setMessage] = useState(
+    plan
+      ? `I'm interested in the ${PLAN_LABEL[plan]} plan. `
+      : auditDomain
+        ? `I just ran a Site IQ audit on ${auditDomain} and I'd like help fixing the issues and improving my score.`
+        : "",
+  );
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -49,10 +59,16 @@ export function ContactForm() {
     }
   }
 
-  const heading = plan ? `Talk to us about the ${PLAN_LABEL[plan]} plan` : "Get in touch";
+  const heading = plan
+    ? `Talk to us about the ${PLAN_LABEL[plan]} plan`
+    : auditDomain
+      ? "Let's improve your site"
+      : "Get in touch";
   const sub = plan
     ? `${PLAN_LABEL[plan]} is not self-serve yet - tell us about your use case and team size and we will set you up.`
-    : "Questions, feedback, a bug, or interested in a paid plan? Tell us what you need and we will get back to you.";
+    : auditDomain
+      ? `Tell me a bit about ${auditDomain} and what you would like to improve - I will take a look and get back to you.`
+      : "Questions, feedback, a bug, or interested in a paid plan? Tell us what you need and we will get back to you.";
 
   if (status === "done") {
     return (

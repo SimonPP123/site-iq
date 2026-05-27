@@ -13,6 +13,7 @@ import { normalizeReport } from "./normalize";
 import { SiteHeader } from "@/components/SiteHeader";
 import { CHECK_INFO } from "@/lib/audit/checkInfo";
 import { WhatWeChecked } from "./WhatWeChecked";
+import { ContactCTA } from "./ContactCTA";
 import type { CheckResult, DimensionResult, AuditResult } from "@/lib/audit/types";
 
 /**
@@ -467,6 +468,8 @@ export function ReportView({
               ) : (
                 <ChatPanel reportId={report.id} domain={report.domain} />
               ))}
+
+            {report.status === "done" && !demo && <ContactCTA domain={report.domain} />}
           </>
         )}
       </main>
