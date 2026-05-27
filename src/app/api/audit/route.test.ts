@@ -1,0 +1,152 @@
+// @vitest-environment node
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
+// Hoisted mock state so the vi.mock factories (hoisted above imports) can reference it.
+const h = vi.hoisted(() => ({
+  getClaims: vi.fn(),
+  rpc: vi.fn(),
+  from: vi.fn(),
+  serviceFrom: vi.fn(),
+  rateLimit: vi.fn(),
+  normalizeDomain: vi.fn(),
+  isPrivateIp: vi.fn(),
+  lookup: vi.fn(),
+  env: { AUDITS_ENABLED: "true" as string, GLOBAL_DAILY_AUDIT_CAP: undefined as number | undefined },
+}));
+
+vi.mock("@/lib/supabase/server", () => ({
+  createClient: vi.fn(async () => ({ auth: { getClaims: h.getClaims }, rpc: h.rpc, from: h.from })),
+}));
+vi.mock("@/lib/supabase/service", () => ({ createServiceClient: () => ({ from: h.serviceFrom }) }));
+vi.mock("@/lib/rate-limit", () => ({ rateLimit: h.rateLimit, getRateLimitHeaders: () => ({}) }));
+vi.mock("@/lib/env", () => ({ env: h.env }));
+vi.mock("@/lib/domain", () => ({ normalizeDomain: h.normalizeDomain }));
+vi.mock("@/lib/ssrf", () => ({ isPrivateIp: h.isPrivateIp }));
+vi.mock("@/lib/security", () => ({
+  getClientIp: () => "1.2.3.4",
+  sanitizeErrorMessage: (_e: unknown, fallback: string) => fallback,
+}));
+vi.mock("@/lib/plan", () => ({ FREE_PLAN: { auditsPerMonth: 3, chatMessagesPerAudit: 5 } }));
+vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn() }));
+vi.mock("node:dns", () => ({ promises: { lookup: h.lookup } }));
+
+import { POST } from "./route";
+
+const ok = (over?: Partial<{ success: boolean }>) => ({
+  success: true,
+  remaining: 9,
+  resetTime: Date.now() + 60_000,
+  limit: 10,
+  ...over,
+});
+
+function req(body: unknown) {
+  return new Request("http://localhost/api/audit", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.env.AUDITS_ENABLED = "true";
+  h.env.GLOBAL_DAILY_AUDIT_CAP = undefined;
+  h.getClaims.mockResolvedValue({ data: { claims: { sub: "user-1" } } });
+  h.rateLimit.mockResolvedValue(ok());
+  h.normalizeDomain.mockReturnValue({ ok: true, domain: "example.com", rootUrl: "https://example.com" });
+  h.isPrivateIp.mockReturnValue(false);
+  h.lookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+  h.rpc.mockResolvedValue({ data: 1, error: null });
+  const single = vi.fn().mockResolvedValue({ data: { id: "report-1" }, error: null });
+  h.from.mockReturnValue({ insert: vi.fn(() => ({ select: vi.fn(() => ({ single })) })) });
+  h.serviceFrom.mockReturnValue({ update: vi.fn(() => ({ eq: vi.fn().mockResolvedValue({ error: null }) })) });
+  vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 202 })));
+  process.env.N8N_AUDIT_WEBHOOK_URL = "https://n8n.example/webhook";
+  process.env.SIS_WEBHOOK_SECRET = "x".repeat(16);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("POST /api/audit", () => {
+  it("returns 503 when audits are disabled via the kill-switch", async () => {
+    h.env.AUDITS_ENABLED = "false";
+    const res = await POST(req({ domain: "example.com" }));
+    expect(res.status).toBe(503);
+  });
+
+  it("returns 400 for an invalid body", async () => {
+    const res = await POST(req({ nope: true }));
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 401 when unauthenticated", async () => {
+    h.getClaims.mockResolvedValue({ data: { claims: null } });
+    const res = await POST(req({ domain: "example.com" }));
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 429 when rate-limited", async () => {
+    h.rateLimit.mockResolvedValue(ok({ success: false }));
+    const res = await POST(req({ domain: "example.com" }));
+    expect(res.status).toBe(429);
+  });
+
+  it("returns 400 for an invalid/unnormalizable domain", async () => {
+    h.normalizeDomain.mockReturnValue({ ok: false, error: "bad domain" });
+    const res = await POST(req({ domain: "@@@" }));
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when the domain does not resolve (NXDOMAIN)", async () => {
+    h.lookup.mockRejectedValue(new Error("getaddrinfo ENOTFOUND"));
+    const res = await POST(req({ domain: "does-not-exist.example" }));
+    expect(res.status).toBe(400);
+  });
+
+  it("proceeds when DNS times out (fail-open) and still reaches 202", async () => {
+    h.lookup.mockRejectedValue(new Error("dns-timeout"));
+    const res = await POST(req({ domain: "slow-dns.example" }));
+    expect(res.status).toBe(202);
+  });
+
+  it("returns 400 when the domain resolves to a private IP (SSRF guard)", async () => {
+    h.isPrivateIp.mockReturnValue(true);
+    const res = await POST(req({ domain: "evil.example" }));
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 503 when the global daily cap is exhausted", async () => {
+    h.env.GLOBAL_DAILY_AUDIT_CAP = 100;
+    h.rateLimit.mockImplementation(async (key: string) =>
+      key === "global:audits" ? ok({ success: false }) : ok(),
+    );
+    const res = await POST(req({ domain: "example.com" }));
+    expect(res.status).toBe(503);
+  });
+
+  it("returns 429 when the monthly free quota is exhausted (-1)", async () => {
+    h.rpc.mockResolvedValue({ data: -1, error: null });
+    const res = await POST(req({ domain: "example.com" }));
+    expect(res.status).toBe(429);
+  });
+
+  it("returns 202 with the reportId on success and triggers n8n", async () => {
+    const res = await POST(req({ domain: "example.com" }));
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ reportId: "report-1" });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("returns 502 and marks the report errored when the n8n trigger fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500 })));
+    const updateEq = vi.fn().mockResolvedValue({ error: null });
+    const update = vi.fn(() => ({ eq: updateEq }));
+    h.serviceFrom.mockReturnValue({ update });
+    const res = await POST(req({ domain: "example.com" }));
+    expect(res.status).toBe(502);
+    expect(update).toHaveBeenCalledWith({ status: "error", error: expect.any(String) });
+  });
+});

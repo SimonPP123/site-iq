@@ -1,0 +1,182 @@
+name: Nightly
+
+on:
+  schedule:
+    # Run every night at 2am UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '22'
+  # Public, non-secret placeholders so `next build` / `next start` boot in CI without real credentials
+  # (same rationale as ci.yml). The load test only hits public pages + the health / audit-gate endpoints.
+  NEXT_PUBLIC_SUPABASE_URL: 'https://dummy.supabase.co'
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: 'ci-placeholder-anon-key'
+
+jobs:
+  # Job 1: Full browser matrix E2E tests
+  e2e-full-matrix:
+    name: E2E (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Build application
+        run: npm run build
+
+      - name: Run E2E tests
+        run: npx playwright test --project=${{ matrix.browser }}
+        env:
+          CI: true
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-report-${{ matrix.browser }}
+          path: playwright-report/
+          retention-days: 7
+
+  # Job 2: Visual regression tests
+  visual-regression:
+    name: Visual Regression
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Build application
+        run: npm run build
+
+      # Real comparison against committed baselines. We deliberately do NOT pass --update-snapshots here
+      # (that would overwrite the baseline every run and detect nothing). Baselines are platform-specific
+      # (Linux), so they are produced by the "Visual Baselines" workflow (workflow_dispatch) and committed;
+      # if none exist yet this step is skipped with a notice rather than failing spuriously.
+      - name: Check for committed baselines
+        id: baselines
+        run: |
+          if ls tests/visual.spec.ts-snapshots/*.png >/dev/null 2>&1; then
+            echo "exist=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exist=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No visual baselines committed yet. Run Actions -> Visual Baselines -> Run workflow once to generate Linux baselines; this job then compares against them."
+          fi
+
+      - name: Run visual comparison
+        if: steps.baselines.outputs.exist == 'true'
+        run: npx playwright test tests/visual.spec.ts
+        env:
+          CI: true
+
+      - name: Upload diff report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: visual-diff-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14
+
+  # Job 3: Load testing with k6
+  load-test:
+    name: Load Testing
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Start server
+        run: npm run start &
+        env:
+          NODE_ENV: production
+
+      - name: Wait for server
+        run: |
+          for i in {1..30}; do
+            curl -s http://localhost:3000 > /dev/null && break
+            echo "Waiting for server... ($i/30)"
+            sleep 2
+          done
+
+      - name: Run smoke test
+        run: k6 run k6/smoke-test.js
+        continue-on-error: true
+
+      - name: Run load test
+        run: k6 run k6/load-test.js
+        continue-on-error: true
+
+      - name: Generate summary
+        run: |
+          echo "## Load Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Generated on $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Check the job logs for detailed k6 metrics." >> $GITHUB_STEP_SUMMARY
+
+  # Summary job
+  nightly-summary:
+    name: Nightly Summary
+    runs-on: ubuntu-latest
+    needs: [e2e-full-matrix, visual-regression, load-test]
+    if: always()
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## Nightly Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Suite | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| E2E Full Matrix | ${{ needs.e2e-full-matrix.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Visual Regression | ${{ needs.visual-regression.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Load Testing | ${{ needs.load-test.result }} |" >> $GITHUB_STEP_SUMMARY

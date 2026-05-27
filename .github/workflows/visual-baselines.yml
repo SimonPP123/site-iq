@@ -1,0 +1,58 @@
+name: Visual Baselines
+
+# One-off / on-demand: generate the Linux visual-regression baselines and commit them, so the nightly
+# "Visual Regression" job can do a real comparison. Run from the Actions tab (Run workflow) after a
+# deliberate UI change. Baselines are screenshots of the public UI - no secrets - safe to commit.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: '22'
+  NEXT_PUBLIC_SUPABASE_URL: 'https://dummy.supabase.co'
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: 'ci-placeholder-anon-key'
+
+jobs:
+  generate:
+    name: Generate + commit baselines
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Build application
+        run: npm run build
+
+      - name: Generate baselines
+        # First-time snapshot writes are reported as a non-zero "did not match / was written" result;
+        # we only want the PNGs, so this step is allowed to be non-green.
+        run: npx playwright test tests/visual.spec.ts --update-snapshots
+        env:
+          CI: true
+        continue-on-error: true
+
+      - name: Commit baselines
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tests/visual.spec.ts-snapshots
+          if git diff --staged --quiet; then
+            echo "No baseline changes to commit."
+          else
+            git commit -m "test(visual): regenerate Linux baselines [skip ci]"
+            git push
+          fi

@@ -1,0 +1,151 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/* Class-based dark mode so foundation `dark:` variants align with our always-dark theme. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Token NAMES are registered with Tailwind here so `bg-background`, `text-muted-foreground`,
+   `border`, `accent`, etc. resolve as utilities. The actual VALUES are theme-scoped below
+   (`:root` = light, `.dark` = dark) so a single token set adapts to both themes. The `@theme`
+   defaults double as the light palette - keep them in sync with the `:root` block. */
+@theme {
+  --font-sans: var(--font-body), "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+
+  /* Light palette (default). */
+  --color-background: #fbfbfd;
+  --color-foreground: #18181b;
+  --color-card: #ffffff;
+  --color-muted: #f1f1f4;
+  --color-muted-foreground: #5b5b66;
+  --color-border: #e4e4e9;
+  /* Light accent darkened from #7c6cff to ~6:1 on white (WCAG AA for link text + button fill);
+     the dark theme keeps the lighter #7c6cff in the .dark block below. */
+  --color-accent: #5b46e0;
+  --color-accent-foreground: #ffffff;
+  --color-ring: #5b46e0;
+
+  /* Recharts gauge track (light grey on light; overridden to slate on dark). */
+  --color-gauge-track: #e4e4e9;
+}
+
+/* Light theme values, also applied to :root so the page renders correctly before
+   the theme provider resolves a class (system default -> light on a light OS). */
+:root {
+  --color-background: #fbfbfd;
+  --color-foreground: #18181b;
+  --color-card: #ffffff;
+  --color-muted: #f1f1f4;
+  --color-muted-foreground: #5b5b66;
+  --color-border: #e4e4e9;
+  --color-accent: #5b46e0;
+  --color-accent-foreground: #ffffff;
+  --color-ring: #5b46e0;
+  --color-gauge-track: #e4e4e9;
+  color-scheme: light;
+}
+
+/* Dark theme: the original Site IQ dark design system (zinc surfaces, near-black bg).
+   Applied whenever the theme provider / pre-paint script adds `.dark` to <html>. */
+.dark {
+  --color-background: #08080b;
+  --color-foreground: #ededf2;
+  --color-card: #101014;
+  --color-muted: #17171c;
+  --color-muted-foreground: #9a9aa7;
+  --color-border: #26262d;
+  --color-accent: #7c6cff;
+  --color-accent-foreground: #ffffff;
+  --color-ring: #7c6cff;
+  --color-gauge-track: #1f2937;
+  color-scheme: dark;
+}
+
+@layer base {
+  body {
+    background:
+      radial-gradient(900px 520px at 50% -8%, color-mix(in oklab, var(--color-accent) 15%, transparent), transparent 60%),
+      var(--color-background);
+    color: var(--color-foreground);
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--color-accent) 35%, transparent);
+  }
+
+  /* Distinctive display font (Bricolage Grotesque) for headings + the wordmark, slightly tighter
+     tracking; body text stays on the clean --font-body (Inter). */
+  h1, h2, h3, .font-display {
+    font-family: var(--font-display), var(--font-body), ui-sans-serif, sans-serif;
+    letter-spacing: -0.015em;
+  }
+
+  /* Keyboard focus only (:focus-visible, never plain :focus/mouse). A 2px ring
+     in the accent ring colour with an offset stays visible on the near-black
+     background. */
+  a:focus-visible,
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  summary:focus-visible,
+  [tabindex]:focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+    border-radius: 0.25rem;
+  }
+
+  /* Respect prefers-reduced-motion: stop the bouncing chat dots, pulsing dots
+     and spinners, and disable transitions/smooth scrolling (WCAG 2.3.3). */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+    .animate-bounce,
+    .animate-pulse,
+    .animate-spin {
+      animation: none !important;
+    }
+  }
+
+  /* iOS Safari zooms in when focusing any input with font-size < 16px (and never zooms back out).
+     Force >= 16px on small screens so focusing a field never triggers that jarring zoom. */
+  @media (max-width: 640px) {
+    input,
+    select,
+    textarea {
+      font-size: 16px;
+    }
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  /* Soft elevated surface used across Site IQ cards. */
+  .surface {
+    background: color-mix(in oklab, var(--color-card) 90%, transparent);
+    border: 1px solid var(--color-border);
+    border-radius: 1rem;
+    box-shadow: 0 1px 2px -1px rgb(0 0 0 / 0.06), 0 12px 32px -16px rgb(0 0 0 / 0.12);
+  }
+  /* Subtle foreground→accent text gradient for the wordmark. Uses tokens so it stays
+     clearly legible on BOTH themes (dark text→accent on light; near-white→accent on dark),
+     instead of the old white→light-purple that vanished on a white background. */
+  .accent-text {
+    background: linear-gradient(
+      180deg,
+      var(--color-foreground) 0%,
+      var(--color-accent) 130%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+}

@@ -1,0 +1,23 @@
+title = "Site IQ gitleaks config"
+
+# Use gitleaks' built-in rule set, plus the allowlist below for this repo's known-safe placeholders.
+# Real secrets live only in Vercel + n8n + the Supabase dashboard, never in git.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documentation, example env, generated workflow JSON, and placeholder values"
+# Paths that only ever contain examples / docs / non-secret generated IDs.
+paths = [
+  '''\.env\.example$''',
+  '''.*\.md$''',
+  '''n8n-workflows/.*\.json$''',
+]
+# Placeholder tokens used throughout the examples and CI (never real credentials).
+regexes = [
+  '''your-[a-z0-9-]+''',
+  '''ci-placeholder[a-z0-9-]*''',
+  '''dummy\.supabase\.co''',
+  '''(?i)example\.(com|org)''',
+  '''re_your-api-key''',
+]

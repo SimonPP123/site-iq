@@ -1,0 +1,71 @@
+version: 2
+updates:
+  # NPM dependencies
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+
+    # Group minor/patch updates to reduce PR noise
+    groups:
+      # Production dependencies - minor/patch
+      production-minor:
+        dependency-type: "production"
+        update-types: ["minor", "patch"]
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "next"
+          - "react"
+          - "react-dom"
+
+      # Development dependencies - minor/patch
+      development:
+        dependency-type: "development"
+        update-types: ["minor", "patch"]
+        patterns:
+          - "*"
+
+      # Testing tools
+      testing:
+        patterns:
+          - "@playwright/*"
+          - "playwright"
+          - "@testing-library/*"
+          - "vitest"
+          - "@vitest/*"
+
+    # Ignore major version updates for core framework (review manually)
+    ignore:
+      - dependency-name: "next"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major"]
+
+    labels:
+      - "dependencies"
+      - "automated"
+
+    commit-message:
+      prefix: "chore(deps):"
+
+    # Auto-approve minor/patch updates
+    reviewers:
+      - "simeonpenev"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "ci/cd"
+      - "automated"
+    commit-message:
+      prefix: "chore(ci):"

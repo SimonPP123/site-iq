@@ -1,0 +1,42 @@
+# Supabase local-development config.
+#
+# Used by `supabase start` / `supabase db reset` (locally and in the CI "Migration Check" job) to
+# replay every migration against a real - but local and ephemeral - Supabase stack. It is NOT used in
+# production: the live project is managed from the Supabase dashboard. No secrets here; the local stack
+# mints its own demo keys at boot.
+project_id = "site-iq"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+# pgvector lives in the `extensions` schema (migration 0001); keep it on the search path.
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+# Used only by `supabase db diff`; harmless otherwise.
+shadow_port = 54320
+
+[db.seed]
+enabled = true
+sql_paths = ["./seed.sql"]
+
+[studio]
+enabled = true
+port = 54323
+
+[realtime]
+enabled = true
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3000"
+additional_redirect_urls = ["http://127.0.0.1:3000"]
+jwt_expiry = 3600
+enable_signup = true
+
+[auth.email]
+# Mirror production intent: confirmations on. Local mail is caught by Inbucket, so this never blocks CI.
+enable_confirmations = true

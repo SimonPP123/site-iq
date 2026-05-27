@@ -1,0 +1,80 @@
+{
+  "name": "Site IQ - Contact",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Site IQ - Contact\nWeb-form lead -> Gmail to the team inbox.\n\n**One-time setup:** connect a Google (Gmail OAuth2) credential on the **Send Gmail** node, then activate. The app POSTs `{ subject, text, name, email, ... }` with `X-SIS-Secret`.",
+        "height": 280,
+        "width": 380,
+        "color": 4
+      },
+      "id": "c782cfba-7fdd-55a3-a26b-da65e7afeb26",
+      "name": "note-1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "site-contact",
+        "responseMode": "onReceived",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "id": "39b2b41e-8465-5b5e-9ce4-5d012b312bbb",
+      "name": "Contact webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "pWOZFCJrd3fw64u9",
+          "name": "Site IQ Webhook Secret"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "team@example.com",
+        "subject": "={{ $json.body.subject }}",
+        "message": "={{ $json.body.text }}",
+        "options": {}
+      },
+      "id": "6d848ebd-a389-546b-a211-23b031b6753b",
+      "name": "Send Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        280,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 2
+    }
+  ],
+  "connections": {
+    "Contact webhook": {
+      "main": [
+        [
+          {
+            "node": "Send Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

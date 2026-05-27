@@ -1,0 +1,150 @@
+name: Maintenance
+
+on:
+  schedule:
+    # Run every Monday at 9am UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      run_lighthouse:
+        description: 'Run Lighthouse audit'
+        type: boolean
+        default: true
+      run_security:
+        description: 'Run security audit'
+        type: boolean
+        default: true
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  # Job 1: Security audit
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.run_security != 'false' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        run: npm audit --audit-level=moderate
+        continue-on-error: true
+
+      - name: Check for unused dependencies
+        run: npx depcheck
+        continue-on-error: true
+
+  # Job 2: Outdated packages report
+  outdated-check:
+    name: Outdated Packages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check outdated packages
+        run: |
+          echo "## Outdated Packages Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Generated on $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          npm outdated --json > outdated.json || true
+          if [ -s outdated.json ]; then
+            echo "| Package | Current | Wanted | Latest |" >> $GITHUB_STEP_SUMMARY
+            echo "|---------|---------|--------|--------|" >> $GITHUB_STEP_SUMMARY
+            cat outdated.json | jq -r 'to_entries | .[] | "| \(.key) | \(.value.current) | \(.value.wanted) | \(.value.latest) |"' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "All packages are up to date!" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # Job 3: Lighthouse performance audit
+  lighthouse-audit:
+    name: Lighthouse Performance
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.run_lighthouse != 'false' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Install Lighthouse CI
+        run: npm install -g @lhci/cli
+
+      - name: Run Lighthouse CI
+        run: lhci autorun
+        continue-on-error: true
+
+      - name: Generate summary
+        run: |
+          echo "## Lighthouse Performance Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Generated on $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Check the artifacts for detailed reports." >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Lighthouse report
+        uses: actions/upload-artifact@v7
+        with:
+          name: lighthouse-maintenance-report
+          path: .lighthouseci/
+          retention-days: 30
+
+  # Job 4: Bundle size analysis
+  bundle-analysis:
+    name: Bundle Size
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and analyze
+        run: |
+          npm run build
+          echo "## Bundle Size Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Generated on $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          du -sh .next/ >> $GITHUB_STEP_SUMMARY || true
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Largest files in .next/static" >> $GITHUB_STEP_SUMMARY
+          find .next/static -type f -exec du -h {} + 2>/dev/null | sort -rh | head -20 >> $GITHUB_STEP_SUMMARY || true

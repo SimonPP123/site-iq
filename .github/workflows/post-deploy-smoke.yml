@@ -1,0 +1,49 @@
+name: Post-Deploy Smoke
+
+# Vercel emits a deployment_status to GitHub on every deploy. On a successful PRODUCTION deploy, smoke-test
+# the live URL so a broken deploy surfaces as a red check immediately - not via a user. Preview deploys are
+# skipped on purpose: Vercel Deployment Protection 401s them, which would be a false failure. No secrets used.
+on:
+  deployment_status:
+
+jobs:
+  smoke:
+    name: Smoke test deployment
+    runs-on: ubuntu-latest
+    # Only a successful PRODUCTION deployment that exposes a URL (previews are protected -> 401 -> false red).
+    if: ${{ github.event.deployment_status.state == 'success' && github.event.deployment_status.environment == 'Production' && github.event.deployment_status.environment_url != '' }}
+    steps:
+      - name: Smoke test public surface
+        env:
+          URL: ${{ github.event.deployment_status.environment_url }}
+        run: |
+          set -uo pipefail
+          echo "Smoke-testing $URL"
+          fail=0
+
+          check() {
+            path="$1"; expect="$2"; needle="${3:-}"
+            code=$(curl -sS -m 20 -o /tmp/body -w '%{http_code}' "$URL$path") || {
+              echo "::error::$path request failed"; fail=1; return;
+            }
+            if [ "$code" != "$expect" ]; then
+              echo "::error::$path -> HTTP $code (expected $expect)"; fail=1; return;
+            fi
+            if [ -n "$needle" ] && ! grep -q "$needle" /tmp/body; then
+              echo "::error::$path -> missing expected content '$needle'"; fail=1; return;
+            fi
+            echo "ok: $path -> $code"
+          }
+
+          # Public surface that must always render. The audit path is intentionally NOT exercised (it
+          # would cost a real Firecrawl + OpenAI run); its gate is load-tested separately at zero cost.
+          check "/"            200 "Site IQ"
+          check "/api/health"  200 '"status":"ok"'
+          check "/sample"      200 "Sample report"
+          check "/login"       200 ""
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Post-deploy smoke test failed for $URL"
+            exit 1
+          fi
+          echo "All smoke checks passed for $URL"
