@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { trackAuditCompleted, trackReportViewed, trackSampleViewed } from "@/lib/analytics";
 import ReactMarkdown from "react-markdown";
 import { CheckCircle2, XCircle, CircleDashed } from "@/components/icons";
 import { useAuditSteps, type AuditStep } from "./useAuditSteps";
@@ -146,6 +147,31 @@ export function ReportView({
     const t = setTimeout(() => setStale(true), 4 * 60 * 1000);
     return () => clearTimeout(t);
   }, [report.status]);
+
+  // Analytics: report-view + audit-completion events. ReportView (not useAuditSteps) is the right
+  // home - it owns the report's queued -> done transition (via Realtime) AND has both report.domain
+  // and report.id, which useAuditSteps does not. Ref-guarded so each fires at most once per mount:
+  //  - demo (the public /sample) -> sample_report_viewed (never report_viewed/audit_completed);
+  //  - a live report that is/just-became "done" -> report_viewed + audit_completed, exactly once.
+  // No PII: only sample id (the demo domain), report id, the typed domain, and a fixed status.
+  const viewTracked = useRef(false);
+  useEffect(() => {
+    if (viewTracked.current) return;
+    if (demo) {
+      viewTracked.current = true;
+      trackSampleViewed({ sample_id: report.domain });
+      return;
+    }
+    if (report.status === "done") {
+      viewTracked.current = true;
+      trackReportViewed({ report_id: report.id });
+      trackAuditCompleted({
+        audit_domain: report.domain,
+        report_id: report.id,
+        audit_status: "done",
+      });
+    }
+  }, [demo, report.status, report.id, report.domain]);
 
   const result = report.result;
 

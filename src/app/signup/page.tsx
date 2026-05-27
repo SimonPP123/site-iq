@@ -9,6 +9,7 @@ import { createClient } from "@/lib/supabase/client";
 import { MIN_PASSWORD_LENGTH, PASSWORD_HINT, validatePassword } from "@/lib/password";
 import { isPwnedPassword } from "@/lib/hibp";
 import { authErrorMessage } from "@/lib/auth-errors";
+import { trackSignUp } from "@/lib/analytics";
 
 function SignupForm() {
     const [email, setEmail] = useState("");
@@ -58,6 +59,9 @@ function SignupForm() {
             }
 
             setStatus("success");
+            // Successful signup request (email-confirm may still be pending). Fires only here, never
+            // on the validation / HIBP / auth-error returns above. Method only - never the email.
+            trackSignUp({ method: "password" });
         } catch {
             setErrorMessage("An unexpected error occurred");
             setStatus("error");

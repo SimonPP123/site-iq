@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { createClient } from "@/lib/supabase/client";
+import { trackChatMessageSent } from "@/lib/analytics";
 
 type Msg = { id: string; role: "user" | "assistant"; content: string };
 
@@ -50,6 +51,8 @@ export function ChatPanel({ reportId, domain }: { reportId: string; domain: stri
     setError(null);
     setInput("");
     setMessages((m) => [...m, { id: crypto.randomUUID(), role: "user", content: message }]);
+    // Engagement signal: LENGTH ONLY. The message text is never sent to analytics (PII / privacy).
+    trackChatMessageSent({ chat_message_length: message.length });
     setLoading(true);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 60_000);

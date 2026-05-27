@@ -4,6 +4,8 @@ import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { Footer } from "@/components/Footer";
 import { RouteAnnouncer } from "@/components/RouteAnnouncer";
+import { ConsentBootstrap } from "@/components/ConsentBootstrap";
+import { ConsentBanner } from "@/components/ConsentBanner";
 
 // Body: Inter (clean, legible). Display: Bricolage Grotesque (distinctive, characterful) for headings + wordmark.
 const inter = Inter({ subsets: ["latin"], variable: "--font-body", display: "swap" });
@@ -85,6 +87,11 @@ export default function RootLayout({
                     type="application/ld+json"
                     dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
                 />
+                {/* Consent Mode v2 default + dataLayer bootstrap, then the GTM loader (in that order).
+                    Renders NOTHING unless NEXT_PUBLIC_GTM_ID is set, so dev/preview stays clean. The
+                    default-before-loader ordering here is what lets Site IQ pass its own T5/T6/T15/T20
+                    tracking checks - see ConsentBootstrap. */}
+                <ConsentBootstrap />
             </head>
             <body className={`${inter.variable} ${display.variable} font-sans`}>
                 {/* Skip to main content link for accessibility */}
@@ -98,6 +105,11 @@ export default function RootLayout({
                 <ThemeProvider>
                     {children}
                     <Footer />
+                    {/* Single global instance of the in-house cookie-consent banner. Carries the
+                        T7-detectable markers (id="cookie-consent" / data-cookieconsent /
+                        cookieconsent-banner) and is server-rendered here so a no-JS crawl sees them.
+                        Must NOT be added to per-route layouts (avoids double mounts). */}
+                    <ConsentBanner />
                 </ThemeProvider>
             </body>
         </html>

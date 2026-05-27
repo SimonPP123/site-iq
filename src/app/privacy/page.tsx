@@ -15,7 +15,7 @@ export default function PrivacyPage() {
       <main id="main-content" className="mx-auto w-full max-w-3xl px-6 py-10">
         <article className="prose dark:prose-invert max-w-none prose-headings:tracking-tight prose-a:text-accent prose-a:no-underline hover:prose-a:underline prose-th:text-foreground prose-strong:text-foreground">
           <h1>Privacy Policy</h1>
-          <p className="lead text-muted-foreground">Last updated: May 2026</p>
+          <p className="lead text-muted-foreground">Last updated: 27 May 2026</p>
 
           <p>
             This policy explains what personal data Site IQ collects when you use the website
@@ -75,19 +75,39 @@ export default function PrivacyPage() {
               <em>Legal basis: our legitimate interests</em> (Art. 6(1)(f) GDPR) in operating a safe,
               reliable service.
             </li>
+            <li>
+              <strong>To understand and improve the product</strong> - privacy-friendly, consent-gated
+              analytics (Google Analytics 4 via Google Tag Manager) about how the site is used.{" "}
+              <em>Legal basis: your consent</em> (Art. 6(1)(a) GDPR). Analytics cookies load only after
+              you accept, and you can withdraw at any time (see <a href="#cookies">Cookies</a>).
+            </li>
           </ul>
           <p>
             We do <strong>not</strong> use your data for advertising, and we do not sell it.
           </p>
 
-          <h2>4. Cookies</h2>
+          <h2 id="cookies">4. Cookies and analytics</h2>
           <p>
-            Site IQ uses <strong>only strictly-necessary cookies</strong>: the session cookies set by
-            Supabase to keep you signed in. We do not use analytics, advertising or tracking cookies,
-            and there are no third-party trackers on the site. Because these cookies are essential to
-            provide the service you asked for, no consent banner is required - this notice is here so
-            the use is disclosed transparently. If you clear or block these cookies you will be signed
-            out.
+            <strong>Strictly-necessary cookies.</strong> The session cookies set by Supabase keep you
+            signed in. These are essential to provide the service, so they do not require consent. If
+            you clear or block them you will be signed out.
+          </p>
+          <p>
+            <strong>Analytics cookies (consent-based).</strong> We use <strong>Google Analytics 4</strong>,
+            loaded through <strong>Google Tag Manager</strong>, to understand how Site IQ is used so we
+            can improve it. We run <strong>Google Consent Mode v2</strong> with analytics and advertising
+            storage <strong>denied by default</strong> in the EU/EEA/UK, so nothing non-essential is set
+            until you choose. On your first visit a banner offers <strong>Accept</strong> and{" "}
+            <strong>Reject</strong> as equal options, plus a <strong>Manage</strong> panel for
+            per-category choices. Analytics cookies are set <strong>only if you accept</strong>.
+          </p>
+          <p>
+            We store your choice in your browser (a <code>siteiq-consent</code> entry and a matching
+            cookie) for up to <strong>365 days</strong> so we do not ask on every visit. You can{" "}
+            <strong>change or withdraw your choice at any time</strong> using the{" "}
+            <strong>Cookie settings</strong> link in the footer, and we honour your browser&apos;s{" "}
+            <strong>Global Privacy Control</strong> signal. We do not use advertising cookies and we do
+            not sell your data.
           </p>
 
           <h2>5. Sub-processors</h2>
@@ -130,11 +150,17 @@ export default function PrivacyPage() {
                   <td className="px-3 py-2 align-top">United States</td>
                   <td className="px-3 py-2 align-top">Standard Contractual Clauses (SCCs)</td>
                 </tr>
-                <tr>
+                <tr className="border-b border-border/60">
                   <td className="px-3 py-2 align-top font-medium">OpenAI</td>
                   <td className="px-3 py-2 align-top">Embeddings, the AI summary and the chat answers</td>
                   <td className="px-3 py-2 align-top">United States (EU data residency available on request)</td>
                   <td className="px-3 py-2 align-top">SCCs; EU data residency option</td>
+                </tr>
+                <tr>
+                  <td className="px-3 py-2 align-top font-medium">Google (Analytics 4 / Tag Manager)</td>
+                  <td className="px-3 py-2 align-top">Consent-based product analytics, only after you accept. IP anonymised; not used for ads, not sold.</td>
+                  <td className="px-3 py-2 align-top">United States</td>
+                  <td className="px-3 py-2 align-top">SCCs + EU-US DPF; Consent Mode v2 (denied by default in the EU)</td>
                 </tr>
               </tbody>
             </table>
@@ -150,7 +176,7 @@ export default function PrivacyPage() {
           <p>
             Your account data, reports, crawled content, embeddings and chat history are stored in the
             EU (Supabase, Frankfurt / Ireland). Some processing involves transfers outside the EU/EEA -
-            specifically to Firecrawl and OpenAI in the United States. These transfers are covered by{" "}
+            specifically to Firecrawl, OpenAI and (only with your analytics consent) Google in the United States. These transfers are covered by{" "}
             <strong>Standard Contractual Clauses (SCCs)</strong> and, where applicable, the{" "}
             <strong>EU-US Data Privacy Framework</strong> (Vercel). OpenAI also offers{" "}
             <strong>EU data residency on request</strong>, which we can enable for accounts that need

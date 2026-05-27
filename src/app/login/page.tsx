@@ -9,6 +9,7 @@ import { validateRedirect } from "@/lib/redirect";
 // which the server can't read, so a "successful" login would still 401 every server request.
 import { createClient } from "@/lib/supabase/client";
 import { authErrorMessage } from "@/lib/auth-errors";
+import { trackLogin } from "@/lib/analytics";
 
 function LoginForm() {
     const [email, setEmail] = useState("");
@@ -39,6 +40,8 @@ function LoginForm() {
                 return;
             }
 
+            // Successful auth only (no error above). Method only - never the email or password.
+            trackLogin({ method: "password" });
             router.push(redirect);
             router.refresh();
         } catch {

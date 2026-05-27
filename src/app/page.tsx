@@ -6,6 +6,7 @@ import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { SiteHeader } from "@/components/SiteHeader";
 import { normalizeDomain } from "@/lib/domain";
+import { trackAuditStarted } from "@/lib/analytics";
 
 const EXAMPLES = ["stripe.com", "vercel.com", "linear.app"];
 
@@ -262,6 +263,9 @@ export default function Home() {
         setLoading(false);
         return;
       }
+      // Audit accepted (2xx). Fire AFTER success, BEFORE navigating - never on the 401 (signup) or
+      // error paths above. Send the normalized domain only, never a full path/query (no PII).
+      trackAuditStarted({ audit_domain: valid.domain });
       router.push(`/audit/${data.reportId}`);
     } catch {
       setError("Could not reach the server");

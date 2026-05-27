@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { FooterAuthLink } from "@/components/FooterAuthLink";
+import { CookieSettingsButton } from "@/components/CookieSettingsButton";
 
 /**
  * Global site footer: legal links + an honest AI-disclosure line (EU AI Act Art. 50). Contact and
@@ -28,6 +29,8 @@ export function Footer() {
           <ul className="space-y-1.5">
             <li><Link href="/privacy" className="text-muted-foreground transition hover:text-foreground">Privacy</Link></li>
             <li><Link href="/terms" className="text-muted-foreground transition hover:text-foreground">Terms &amp; acceptable use</Link></li>
+            {/* Re-opens the consent Manage panel from any page (GDPR easy withdrawal). */}
+            <li><CookieSettingsButton /></li>
           </ul>
         </nav>
         <nav className="text-sm" aria-label="Company">

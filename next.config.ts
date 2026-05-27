@@ -20,7 +20,9 @@ const securityHeaders = [
     // which also does auth refresh + route gating) - a careful, preview-tested change tracked separately.
     value: [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline'",
+      // googletagmanager.com serves both gtm.js and gtag.js (our inline bootstrap + GTM loader load
+      // it). 'unsafe-inline' is still required for the inline bootstrap / theme / JSON-LD scripts.
+      "script-src 'self' 'unsafe-inline' https://www.googletagmanager.com",
       // Sentry Session Replay compresses replay data in a Web Worker created from a blob: URL.
       // Without an explicit worker-src, workers fall back to script-src (which has no blob:), so the
       // worker was blocked and a CSP error was logged on every page. A blob: worker can only be
@@ -29,7 +31,10 @@ const securityHeaders = [
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: https: blob:",
       "font-src 'self' data:",
-      "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.sentry.io https://api.pwnedpasswords.com",
+      // GA4 transmits via fetch/sendBeacon to *.google-analytics.com and *.analytics.google.com;
+      // googletagmanager.com is also used for some gtag transport. No frame-src is needed because we
+      // dropped the GTM <noscript> iframe. img-src already allows https: for the GA collect pixel.
+      "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.sentry.io https://api.pwnedpasswords.com https://www.googletagmanager.com https://*.google-analytics.com https://*.analytics.google.com",
       "frame-ancestors 'none'",
       "base-uri 'self'",
       "form-action 'self'",
