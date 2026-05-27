@@ -200,15 +200,17 @@ function verifyUrl(tokenHash, type) {
 }
 
 // Per-action copy. Each entry: { subject, heading, intro, cta, type, tokenHash, recipient, outro }.
-// type is the value put in the verify URL's ?type=; for signup the URL type is "email" (Supabase
-// convention) while the action is "signup".
+// type is the value put in the verify URL's ?type=. For the DIRECT GoTrue endpoint
+// (<SUPABASE_URL>/auth/v1/verify) the signup-confirmation type MUST be "signup". "email" is only
+// valid for the client verifyOtp()/app-confirm-route flow; on GET /verify it 500s with
+// "unsupported authentication method email", so the confirmation link silently never works.
 let spec;
 const toEmail = user.email;          // default recipient
 switch (actionType) {
   case 'signup':
     spec = { subject: 'Confirm your email for Site IQ', heading: 'Confirm your email',
              intro: 'Thanks for signing up for Site IQ. Confirm your email address to activate your account.',
-             cta: 'Confirm email', type: 'email', tokenHash: ed.token_hash, recipient: toEmail,
+             cta: 'Confirm email', type: 'signup', tokenHash: ed.token_hash, recipient: toEmail,
              outro: 'If you did not create a Site IQ account, you can safely ignore this email.' };
     break;
   case 'recovery':
