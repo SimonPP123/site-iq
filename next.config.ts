@@ -21,6 +21,11 @@ const securityHeaders = [
     value: [
       "default-src 'self'",
       "script-src 'self' 'unsafe-inline'",
+      // Sentry Session Replay compresses replay data in a Web Worker created from a blob: URL.
+      // Without an explicit worker-src, workers fall back to script-src (which has no blob:), so the
+      // worker was blocked and a CSP error was logged on every page. A blob: worker can only be
+      // spawned by already-trusted same-origin script, so allowing it here does not widen attack surface.
+      "worker-src 'self' blob:",
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: https: blob:",
       "font-src 'self' data:",
