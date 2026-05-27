@@ -392,7 +392,7 @@ export function ReportView({
                             {a.quickWin && <span className="rounded-md bg-emerald-500/15 px-2 py-0.5 text-emerald-700 dark:text-emerald-400">quick win</span>}
                             {a.requiresApproval && <span className="rounded-md bg-amber-500/15 px-2 py-0.5 text-amber-700 dark:text-amber-400">needs approval</span>}
                             {ev?.failing?.length ? (
-                              <span className="rounded-md bg-amber-500/10 px-2 py-0.5 text-amber-700 dark:text-amber-400">
+                              <span className="rounded-md bg-muted px-2 py-0.5 text-muted-foreground">
                                 {ev.failing.length + (ev.more ?? 0)} {ev.failing.length + (ev.more ?? 0) === 1 ? "page" : "pages"} affected
                               </span>
                             ) : null}

@@ -53,13 +53,13 @@ export default function Error({
                         onClick={reset}
                         className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90"
                     >
-                        Try Again
+                        Try again
                     </button>
                     <button
                         onClick={() => router.push("/")}
                         className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-foreground transition-colors hover:border-accent/60"
                     >
-                        Go Home
+                        Go home
                     </button>
                 </div>
 

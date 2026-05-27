@@ -15,7 +15,7 @@ vi.mock("@sentry/nextjs", () => ({
   captureException: vi.fn(),
 }));
 
-import { rateLimit, getRateLimitHeaders } from "./rate-limit";
+import { rateLimit, getRateLimitHeaders, peekRateLimit } from "./rate-limit";
 
 describe("getRateLimitHeaders", () => {
   it("omits Retry-After when the request is allowed", () => {
@@ -110,5 +110,33 @@ describe("rateLimit - in-memory limiter (development path)", () => {
     const id = "mem-limit-1";
     expect((await rateLimit(id, 1, 60_000)).success).toBe(true);
     expect((await rateLimit(id, 1, 60_000)).success).toBe(false);
+  });
+});
+
+describe("peekRateLimit + fail-closed (cost-critical gate)", () => {
+  beforeEach(() => {
+    rpcMock.mockReset();
+    process.env.FORCE_PG_RATE_LIMIT = "1";
+  });
+  afterEach(() => {
+    delete process.env.FORCE_PG_RATE_LIMIT;
+  });
+
+  it("returns the current count and forwards the bucket params (read-only, no consume)", async () => {
+    rpcMock.mockResolvedValue({ data: 42, error: null });
+    const n = await peekRateLimit("global:audits", 86_400_000);
+    expect(n).toBe(42);
+    expect(rpcMock).toHaveBeenCalledWith("peek_rate_limit", { p_key: "global:audits", p_window_ms: 86_400_000 });
+  });
+
+  it("returns null when the RPC errors, so the caller fails CLOSED (cost ceiling cannot silently vanish)", async () => {
+    rpcMock.mockResolvedValue({ data: null, error: { message: "peek_rate_limit unavailable" } });
+    expect(await peekRateLimit("global:audits", 86_400_000)).toBeNull();
+  });
+
+  it("rateLimit(failClosed=true) returns success:false when the shared backend is down", async () => {
+    rpcMock.mockResolvedValue({ data: null, error: { message: "backend down" } });
+    const r = await rateLimit("global:audits", 5000, 86_400_000, true);
+    expect(r.success).toBe(false);
   });
 });

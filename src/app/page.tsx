@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useState, useEffect, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
@@ -216,6 +216,20 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
+  // Restore a domain a logged-out visitor tried to audit before signing up (stashed on the 401 below),
+  // so they do not have to retype it after confirming their email and signing in.
+  useEffect(() => {
+    try {
+      const pending = localStorage.getItem("siteiq:pendingDomain");
+      if (pending) {
+        setDomain(pending);
+        localStorage.removeItem("siteiq:pendingDomain");
+      }
+    } catch {
+      /* localStorage unavailable - ignore */
+    }
+  }, []);
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     const valid = normalizeDomain(domain);
@@ -232,7 +246,14 @@ export default function Home() {
         body: JSON.stringify({ domain }),
       });
       if (res.status === 401) {
-        router.push(`/login?redirect=${encodeURIComponent("/")}`);
+        // New visitor with no session: send them to signup (the right door for first-time users), and
+        // stash the domain so it is restored on return - no retyping after email confirm + sign in.
+        try {
+          localStorage.setItem("siteiq:pendingDomain", domain);
+        } catch {
+          /* localStorage unavailable - ignore */
+        }
+        router.push("/signup");
         return;
       }
       const data = await res.json();

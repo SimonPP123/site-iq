@@ -139,7 +139,7 @@ describe("POST /api/audit", () => {
     h.peekRateLimit.mockResolvedValue(5); // under cap
     const res = await POST(req({ domain: "example.com" }));
     expect(res.status).toBe(202);
-    expect(h.rateLimit).toHaveBeenCalledWith("global:audits", 100, 86_400_000);
+    expect(h.rateLimit).toHaveBeenCalledWith("global:audits", 100, 86_400_000, true);
   });
 
   it("does not consume a global slot when the n8n trigger fails", async () => {

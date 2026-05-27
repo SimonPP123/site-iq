@@ -209,10 +209,12 @@ export async function POST(req: Request) {
 
   // The audit has actually started (n8n acked) - consume the global daily slot now. Counting only
   // started audits (not rejected/failed attempts) keeps the ceiling honest; a small over-count under
-  // a concurrent burst is acceptable for a soft safety cap. Best-effort, so a counter blip can never
-  // fail an audit that already started.
+  // a concurrent burst is acceptable for a soft safety cap. Best-effort: the result is intentionally
+  // not checked, so a counter blip can never fail an audit that already started. failClosed=true makes
+  // an unreachable counter a clean no-op here, rather than a per-instance in-memory tally that would
+  // diverge across serverless instances - the peek gate above is the real ceiling.
   if (env.GLOBAL_DAILY_AUDIT_CAP) {
-    await rateLimit("global:audits", env.GLOBAL_DAILY_AUDIT_CAP, 86_400_000);
+    await rateLimit("global:audits", env.GLOBAL_DAILY_AUDIT_CAP, 86_400_000, true);
   }
 
   return NextResponse.json({ reportId: report.id }, { status: 202 });
