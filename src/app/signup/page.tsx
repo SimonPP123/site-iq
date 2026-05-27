@@ -8,6 +8,7 @@ import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { MIN_PASSWORD_LENGTH, PASSWORD_HINT, validatePassword } from "@/lib/password";
 import { isPwnedPassword } from "@/lib/hibp";
+import { authErrorMessage } from "@/lib/auth-errors";
 
 function SignupForm() {
     const [email, setEmail] = useState("");
@@ -51,7 +52,7 @@ function SignupForm() {
             });
 
             if (error) {
-                setErrorMessage(error.message);
+                setErrorMessage(authErrorMessage(error));
                 setStatus("error");
                 return;
             }

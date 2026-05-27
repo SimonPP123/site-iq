@@ -8,6 +8,7 @@ import { validateRedirect } from "@/lib/redirect";
 // routes, server components) sees it. The plain @supabase/supabase-js client uses localStorage,
 // which the server can't read, so a "successful" login would still 401 every server request.
 import { createClient } from "@/lib/supabase/client";
+import { authErrorMessage } from "@/lib/auth-errors";
 
 function LoginForm() {
     const [email, setEmail] = useState("");
@@ -33,7 +34,7 @@ function LoginForm() {
             });
 
             if (error) {
-                setErrorMessage(error.message);
+                setErrorMessage(authErrorMessage(error));
                 setStatus("error");
                 return;
             }
@@ -128,7 +129,7 @@ function LoginForm() {
                         <span className="sr-only">Please wait while we sign you in</span>
                     </span>
                 ) : (
-                    "Sign In"
+                    "Sign in"
                 )}
             </button>
         </form>

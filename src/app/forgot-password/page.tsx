@@ -6,6 +6,7 @@ import { useState } from "react";
 // routes, server components) sees it. The plain @supabase/supabase-js client uses localStorage,
 // which the server can't read, so the recovered session would still 401 every server request.
 import { createClient } from "@/lib/supabase/client";
+import { authErrorMessage } from "@/lib/auth-errors";
 
 function ForgotPasswordForm() {
     const [email, setEmail] = useState("");
@@ -28,7 +29,7 @@ function ForgotPasswordForm() {
             });
 
             if (error) {
-                setErrorMessage(error.message);
+                setErrorMessage(authErrorMessage(error));
                 setStatus("error");
                 return;
             }

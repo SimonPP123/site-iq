@@ -6,6 +6,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { MIN_PASSWORD_LENGTH, PASSWORD_HINT, validatePassword } from "@/lib/password";
 import { isPwnedPassword } from "@/lib/hibp";
+import { authErrorMessage } from "@/lib/auth-errors";
 
 /**
  * Set a new password after following the reset link. The /api/auth/callback exchanges the recovery
@@ -41,7 +42,7 @@ export default function ResetPasswordPage() {
     }
     const { error: updErr } = await createClient().auth.updateUser({ password });
     if (updErr) {
-      setError(updErr.message);
+      setError(authErrorMessage(updErr));
       setStatus("idle");
       return;
     }
@@ -98,7 +99,7 @@ export default function ResetPasswordPage() {
                   className="mt-1.5 w-full rounded-lg border border-border bg-card/70 px-3 py-2.5 text-sm transition focus:border-accent/70 focus:outline-none focus:ring-2 focus:ring-accent/40"
                 />
               </div>
-              {error ? <p role="alert" className="text-sm text-red-400">{error}</p> : null}
+              {error ? <p role="alert" className="text-sm text-red-600 dark:text-red-400">{error}</p> : null}
               <button
                 type="submit" disabled={status === "saving"}
                 className="inline-flex w-full items-center justify-center rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-accent-foreground transition hover:opacity-90 disabled:opacity-50"
