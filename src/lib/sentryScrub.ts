@@ -69,7 +69,25 @@ function scrubInPlace(node: unknown, depth: number, seen: WeakSet<object>): void
   }
 }
 
-/** Scrub event-level extras / contexts / tags. Safe to call from beforeSend on any runtime. */
+/**
+ * Redact the PATH + QUERY of any full URL in a free-text string, keeping the scheme+host so the
+ * value still says WHICH service failed. The field-name walk (scrubInPlace) only catches structured
+ * data; a thrown Error on the audit/chat path embeds the user-submitted target URL directly in
+ * event.message / event.exception[].value (DNS/fetch failures, third-party lib exceptions). For
+ * EU/partner clients that crawled path is the GDPR-adjacent leak the whole scrubber exists to
+ * prevent, via the one channel the structured walk does not cover.
+ * `https://victim.example/customer/42?token=x` -> `https://victim.example/[redacted]`
+ */
+const URL_PATH_RE = /(https?:\/\/[^/\s"')]+)(\/[^\s"')]*)?/gi;
+export function redactUrlPaths(s: string): string {
+  if (typeof s !== "string" || s.length === 0) return s;
+  return s.replace(URL_PATH_RE, (_m, origin: string, path?: string) =>
+    path && path.length > 1 ? `${origin}/[redacted]` : origin,
+  );
+}
+
+/** Scrub event-level extras / contexts / tags + the message/exception free-text values. Safe to
+ *  call from beforeSend on any runtime. */
 export function scrubAuditPaths<T extends Event>(event: T, _hint?: EventHint): T {
   const seen = new WeakSet<object>();
   if (event.extra) scrubInPlace(event.extra, 0, seen);
@@ -78,6 +96,17 @@ export function scrubAuditPaths<T extends Event>(event: T, _hint?: EventHint): T
   // Breadcrumbs on the event itself (post-attached) - distinct from the streaming beforeBreadcrumb.
   if (Array.isArray(event.breadcrumbs)) {
     for (const b of event.breadcrumbs) scrubInPlace(b, 0, seen);
+  }
+  // Free-text value pass: redact crawled-URL paths from the headline message and every exception
+  // value (these are NOT field-name reachable and are the most common real leak channel).
+  if (typeof event.message === "string") {
+    event.message = redactUrlPaths(event.message);
+  }
+  const exc = event.exception?.values;
+  if (Array.isArray(exc)) {
+    for (const e of exc) {
+      if (e && typeof e.value === "string") e.value = redactUrlPaths(e.value);
+    }
   }
   return event;
 }

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { sanitizeErrorMessage, getClientIp } from "@/lib/security";
+import { sanitizeErrorMessage, getClientIp, isSameOriginRequest } from "@/lib/security";
 import { env } from "@/lib/env";
 import { rateLimit, getRateLimitHeaders } from "@/lib/rate-limit";
 import { FREE_PLAN, chatMessagesForReport } from "@/lib/plan";
@@ -38,6 +38,9 @@ function buildScorecard(raw: unknown): string {
  * request is synchronous - the agent answers in one round-trip.
  */
 export async function POST(req: Request) {
+  if (!isSameOriginRequest(req)) {
+    return NextResponse.json({ error: "Cross-origin request rejected" }, { status: 403 });
+  }
   if (env.CHAT_ENABLED === "false") {
     return NextResponse.json(
       { error: "Chat is temporarily paused for maintenance. Please try again shortly." },

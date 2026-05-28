@@ -19,6 +19,7 @@ vi.mock("@/lib/env", () => ({ env: h.env }));
 vi.mock("@/lib/security", () => ({
   getClientIp: () => "1.2.3.4",
   sanitizeErrorMessage: (_e: unknown, f: string) => f,
+  isSameOriginRequest: () => true,
 }));
 vi.mock("@/lib/plan", () => ({
   FREE_PLAN: { auditsPerMonth: 3, chatMessagesPerAudit: 5 },

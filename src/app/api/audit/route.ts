@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
-import { sanitizeErrorMessage, getClientIp } from "@/lib/security";
+import { sanitizeErrorMessage, getClientIp, isSameOriginRequest } from "@/lib/security";
 import { env } from "@/lib/env";
 import { rateLimit, getRateLimitHeaders, peekRateLimit } from "@/lib/rate-limit";
 import { FREE_PLAN } from "@/lib/plan";
@@ -39,6 +39,11 @@ const bodySchema = z.object({
  * writes progress + result back to Supabase; the client watches via Realtime.
  */
 export async function POST(req: Request) {
+  // Defense-in-depth CSRF: reject cross-origin cookie-authenticated mutations (don't rely solely on
+  // the implicit SameSite=Lax cookie default).
+  if (!isSameOriginRequest(req)) {
+    return NextResponse.json({ error: "Cross-origin request rejected" }, { status: 403 });
+  }
   if (env.AUDITS_ENABLED === "false") {
     return NextResponse.json(
       { error: "Audits are temporarily paused for maintenance. Please try again shortly." },

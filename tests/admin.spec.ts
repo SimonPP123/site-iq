@@ -1,49 +1,29 @@
 import { test, expect } from "@playwright/test";
 
-test.describe("Admin Dashboard", () => {
-    // Note: In development mode without Supabase, admin routes are accessible
-    // In production, these tests would need authentication setup
+/**
+ * Admin auth-boundary E2E. These assert the SECURITY PROPERTY (unauthenticated visitors must NOT
+ * reach the admin area), not the old insecure dev behavior. Every admin page calls requireAdmin()
+ * which notFound()s non-admins, and middleware gates /admin to the ADMIN_EMAILS allowlist - so a
+ * logged-out request must NOT receive a 200 that renders admin content; it should 404 or redirect
+ * to /login. (Run against a Supabase-configured env; the previous "expect 200 while logged out"
+ * encoded dev-without-Supabase behavior and would have hidden a world-readable /admin/secrets
+ * regression in production.)
+ */
 
-    test("admin dashboard redirects to login when not authenticated", async ({ page }) => {
-        // Skip if Supabase not configured (dev mode allows access)
-        const response = await page.goto("/admin");
+const ADMIN_PAGES = ["/admin", "/admin/docs", "/admin/secrets", "/admin/users", "/admin/email", "/admin/contact"];
 
-        // Either redirects to login OR shows admin (if Supabase not configured)
-        const url = page.url();
-        const isLoginRedirect = url.includes("/login");
-        const isAdminPage = url.includes("/admin");
-
-        expect(isLoginRedirect || isAdminPage).toBe(true);
+test.describe("Admin auth boundary (unauthenticated)", () => {
+  for (const path of ADMIN_PAGES) {
+    test(`unauthenticated ${path} is not world-readable (404 or login redirect, never a 200 admin page)`, async ({ page }) => {
+      const response = await page.goto(path);
+      const status = response?.status() ?? 0;
+      const url = page.url();
+      const redirectedToLogin = url.includes("/login");
+      // Security property: NOT a 200 that stayed on the admin URL.
+      const exposedAdmin = status === 200 && url.includes("/admin") && !redirectedToLogin;
+      expect(exposedAdmin, `${path} must not expose admin content to a logged-out visitor`).toBe(false);
+      // And positively: either a 404 (requireAdmin notFound) or a login redirect.
+      expect(status === 404 || redirectedToLogin).toBe(true);
     });
-
-    test("admin email page exists", async ({ page }) => {
-        await page.goto("/admin/email");
-
-        // Check page has email-related content
-        const hasEmailContent = await page.locator("text=/email/i").count();
-        expect(hasEmailContent).toBeGreaterThan(0);
-    });
-
-    test("admin docs page exists", async ({ page }) => {
-        const response = await page.goto("/admin/docs");
-        expect(response?.status()).toBe(200);
-    });
-
-    test("admin secrets page exists", async ({ page }) => {
-        const response = await page.goto("/admin/secrets");
-        expect(response?.status()).toBe(200);
-    });
-
-    test("admin users page exists", async ({ page }) => {
-        const response = await page.goto("/admin/users");
-        expect(response?.status()).toBe(200);
-    });
-
-    test("admin navigation links work", async ({ page }) => {
-        await page.goto("/admin");
-
-        // Check sidebar exists
-        const sidebar = page.locator("nav, aside, [role='navigation']").first();
-        await expect(sidebar).toBeVisible();
-    });
+  }
 });

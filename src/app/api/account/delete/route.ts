@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
-import { sanitizeErrorMessage } from "@/lib/security";
+import { sanitizeErrorMessage, isSameOriginRequest } from "@/lib/security";
 import { rateLimit, getRateLimitHeaders } from "@/lib/rate-limit";
 import * as Sentry from "@sentry/nextjs";
 
@@ -13,7 +13,11 @@ export const runtime = "nodejs";
  * audit_usage (FK ON DELETE CASCADE); `documents` has no FK to reports, so its embeddings are
  * purged explicitly first (by metadata->>report_id) before the cascade removes the report ids.
  */
-export async function POST() {
+export async function POST(req: Request) {
+  // Irreversible account+data erasure - hardest mutation to leave on an implicit cookie default.
+  if (!isSameOriginRequest(req)) {
+    return NextResponse.json({ error: "Cross-origin request rejected" }, { status: 403 });
+  }
   const supabase = await createClient();
   const { data: claims } = await supabase.auth.getClaims();
   if (!claims?.claims) {
