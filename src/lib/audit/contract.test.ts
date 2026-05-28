@@ -37,6 +37,29 @@ describe("parseAuditResult", () => {
     expect(parseAuditResult(null)).toBeNull();
     expect(parseAuditResult({ overall: 1, dimensions: "nope", actionPlan: [] })).toBeNull();
   });
+  // Two-tier validation (production hardening): strict-first, fall back to minimal so a workflow
+  // drift only warns instead of blanking the report.
+  it("degrades to minimal when strict mirror invariant fails (dangling failing.path)", () => {
+    // Strict refine rejects because /ghost is in failing[] but not in pages[]. Minimal accepts
+    // the payload (no mirror enforcement) so the report still renders, just with a warning logged.
+    const drift = {
+      ...sampleResult,
+      pages: [{ path: "/" }],
+      dimensions: sampleResult.dimensions.map((d) =>
+        d.id === "seo"
+          ? { ...d, checks: [{ ...d.checks[0], evidence: { where: "x", failing: [{ path: "/ghost" }] } }] }
+          : d,
+      ),
+    };
+    expect(strictAuditResultSchema.safeParse(drift).success).toBe(false); // strict rejects
+    const out = parseAuditResult(drift); // but parseAuditResult degrades
+    expect(out).not.toBeNull();
+    expect(out?.overall).toBe(72);
+  });
+  it("returns null when both strict AND minimal fail (truly malformed)", () => {
+    // No overall, no dimensions, no actionPlan -> minimal can't parse either.
+    expect(parseAuditResult({ random: "garbage" })).toBeNull();
+  });
 });
 
 describe("audit contract schemas", () => {

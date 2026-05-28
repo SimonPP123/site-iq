@@ -64,12 +64,17 @@ describe("buildPageMatrix", () => {
     expect(m.get("/")).toEqual([]);
   });
 
-  it("defaults severity to 'info' when the check projection omits it (legacy reports)", () => {
+  it("preserves the producer's severity verbatim (no silent default)", () => {
+    // Severity is now required on PageMatrixCheck (commit aligned with the multi-agent
+    // type-analyzer's recommendation: migrate the fixture, drop the `?? \"info\"` fallback).
+    // The matrix forwards what the producer gave - if a check has severity \"critical\", that's
+    // what the histogram sees; if a future producer drift drops severity entirely, TS errors at
+    // build time instead of the renderer silently bucketing into \"Low\".
     const m = buildPageMatrix(
       [{ path: "/" }],
-      [dim("seo", [{ id: "S1", label: "x", evidence: { failing: [{ path: "/" }], where: "x" } }])],
+      [dim("seo", [{ id: "S1", label: "x", severity: "critical", evidence: { failing: [{ path: "/" }], where: "x" } }])],
     );
-    expect(m.get("/")?.[0]?.severity).toBe("info");
+    expect(m.get("/")?.[0]?.severity).toBe("critical");
   });
 
   it("handles missing/undefined inputs without throwing", () => {

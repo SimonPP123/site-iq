@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
@@ -49,10 +49,11 @@ function renderReason(reason: FailureReason | undefined): string {
  * pages failed). CheckResult carries additional scoring fields (weight, severity, dimension, etc.)
  * that are not needed in the report view layer - we project down to this subset.
  */
-// `severity` is `Partial`-ed (i.e. optional) because old reports persisted before the severity-on-Check
-// migration lack it, and the demo fixture in /sample also leaves it implicit. The renderer falls back
-// to "info" when missing (lowest bucket), so a missing severity never crashes the histogram.
-type Check = Pick<CheckResult, "id" | "label" | "ratio" | "evidence"> & Partial<Pick<CheckResult, "severity">>;
+// Slim per-check shape the UI needs. `severity` is REQUIRED - the engine always emits it
+// (CheckResult.severity is required in types.ts) and the demo fixture in /sample is now migrated
+// to include it on every check. Requiring it here removes the "silently default to info" fallback
+// in pageMatrix.ts and surfaces real producer bugs as TS errors instead of mis-rendering.
+type Check = Pick<CheckResult, "id" | "label" | "ratio" | "evidence" | "severity">;
 
 /**
  * UI-facing dimension: same as DimensionResult but with checks narrowed to the
@@ -126,6 +127,47 @@ export function ReportView({
   const router = useRouter();
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
+  // Distinguish "refetch of an already-completed report's result row failed" from "stale Realtime
+  // socket". The former is recoverable (the audit data is committed; we just couldn't read it from
+  // the API) - we want to show a Retry button. The latter just means the WS dropped and we may be
+  // missing in-flight updates - the existing "stale" banner is the right shape. Separating the two
+  // states keeps each surface honest about what actually happened.
+  const [refetchError, setRefetchError] = useState<string | null>(null);
+  const [refetchInFlight, setRefetchInFlight] = useState(false);
+
+  // Manual refetch of the report row, exposed as a Retry button on the "we finished but couldn't
+  // load" surface. Reused by both the Realtime-triggered post-terminal refetch (in the effect
+  // below) and the user-initiated retry from the failed-load section.
+  const refetchReport = useCallback(async (): Promise<void> => {
+    setRefetchInFlight(true);
+    setRefetchError(null);
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("reports")
+        .select("*")
+        .eq("id", report.id)
+        .single();
+      if (error || !data) {
+        const msg = error?.message ?? "The server didn't return a result for this report.";
+        setRefetchError(msg);
+        // Surface to Sentry so we can measure how often this fires in production. Lazy-loaded so
+        // the bundle stays slim when the DSN is unset (no-op via the import side-effect).
+        if (typeof window !== "undefined" && process.env.NEXT_PUBLIC_SENTRY_DSN) {
+          void import("@sentry/nextjs").then((Sentry) => {
+            Sentry.captureMessage("[realtime] manual refetch failed", {
+              level: "warning",
+              extra: { reportId: report.id, error: msg },
+            });
+          });
+        }
+        return;
+      }
+      setReport(normalizeReport(data as Report));
+    } finally {
+      setRefetchInFlight(false);
+    }
+  }, [report.id]);
 
   // Re-run the audit for the same domain on failure. The failed report's credit is refunded by a DB
   // trigger (migration 0008), so a retry doesn't double-charge the free plan.
@@ -196,9 +238,20 @@ export function ReportView({
             if (cancelled || mySeq !== seqRef.current) return;
             if (error || !data) {
               // Refetch failed; apply the status projection so the spinner stops and the user sees
-              // the terminal state, but flag staleness so the "Refresh" hint shows.
+              // the terminal state. Set a SPECIFIC refetch error (not just `stale`) so the failed-
+              // load surface can offer a Retry button instead of the generic "refresh the page"
+              // message. The audit data IS committed - the failure is purely transport-layer.
               setReport((r) => ({ ...r, status: lite.status, score_overall: lite.score_overall ?? r.score_overall, error: lite.error ?? r.error }));
-              setStale(true);
+              const msg = error?.message ?? "Realtime refetch failed.";
+              setRefetchError(msg);
+              if (typeof window !== "undefined" && process.env.NEXT_PUBLIC_SENTRY_DSN) {
+                void import("@sentry/nextjs").then((Sentry) => {
+                  Sentry.captureMessage("[realtime] refetch failed after terminal status", {
+                    level: "warning",
+                    extra: { reportId: report.id, status: lite.status, error: msg },
+                  });
+                });
+              }
               return;
             }
             setReport(normalizeReport(data as Report));
@@ -320,11 +373,35 @@ export function ReportView({
 
         {!result && report.status === "done" && (
           <section className="surface mt-8 p-6">
-            <p className="mb-1 font-medium">We finished, but couldn&apos;t load the results.</p>
-            <p className="mb-4 text-sm text-muted-foreground">
-              This is usually temporary - refresh the page, or start a new audit.
-            </p>
-            <Link href="/" className="text-sm font-medium text-accent">Audit a different site →</Link>
+            {refetchError ? (
+              <>
+                <p className="mb-1 font-medium">We finished - but couldn&apos;t fetch the report data.</p>
+                <p className="mb-4 text-sm text-muted-foreground">
+                  Your audit IS in our database (status: done). This is almost always a transient
+                  network hiccup between your browser and our API - tap Retry to try again.
+                </p>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={refetchReport}
+                    disabled={refetchInFlight}
+                    className="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-accent-foreground transition hover:opacity-90 disabled:opacity-50"
+                  >
+                    {refetchInFlight ? "Loading…" : "Retry"}
+                  </button>
+                  <Link href="/" className="text-sm text-accent">Audit a different site →</Link>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">{refetchError}</p>
+              </>
+            ) : (
+              <>
+                <p className="mb-1 font-medium">We finished, but couldn&apos;t load the results.</p>
+                <p className="mb-4 text-sm text-muted-foreground">
+                  This is usually temporary - refresh the page, or start a new audit.
+                </p>
+                <Link href="/" className="text-sm font-medium text-accent">Audit a different site →</Link>
+              </>
+            )}
           </section>
         )}
 
