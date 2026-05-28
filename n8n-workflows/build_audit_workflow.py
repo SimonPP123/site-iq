@@ -110,12 +110,30 @@ const score = (u) => {
   return s - path.split('/').filter(Boolean).length;
 };
 cands.sort((a, b) => score(b) - score(a));
+// SAFETY FILTER: drop URLs whose path matches a known-sensitive pattern BEFORE Firecrawl crawls them.
+// The audit's job is to score a public-facing site, not to enumerate admin / staging / customer-area
+// paths. If Firecrawl follows internal navigation into one of these (common on misconfigured WP /
+// Shopify), we'd persist the path in evidence.failing AND in the new pages list - a credible data-
+// exfiltration risk if the user shares the report with a third party (partner prospect, beta tester).
+// The filter is conservative (false-positives are far cheaper than false-negatives): when in doubt,
+// SKIP and surface the count to the user via pagesExcluded so it's not silent.
+const SENSITIVE_PATH_RE = /\/(?:wp-admin|wp-login|wp-json|administrator|admin|login|signin|sign-in|signup|sign-up|register|account(?:s)?|dashboard|customer(?:s)?|user(?:s)?|profile|settings|preferences|checkout|cart|orders?|invoice(?:s)?|preview|drafts?|staging|stage|dev|test|debug|server-status|phpmyadmin|\.git|\.env|\.well-known|api|graphql|internal|private|backup|tmp|cache)(?:\/|$|\?|#)/i;
+const sensitiveSkipped = [];
+const cleanCands = [];
+for (const u of cands) {
+  const path = u.replace(/^https?:\/\/[^/]+/, '');
+  if (SENSITIVE_PATH_RE.test(path)) { sensitiveSkipped.push(path.slice(0, 80)); continue; }
+  cleanCands.push(u);
+}
 // COST CAP. Firecrawl's /v2/batch/scrape has NO maxCredits/limit/maxPages param (verified against the
 // API docs 2026-05-25: total spend is governed purely by urls.length, ~1 credit/page on proxy:'basic').
 // So the cost ceiling IS this hard cap on how many URLs we ever submit - a pathological site with
 // thousands of mapped links can never blow the budget past MAX_PAGES credits for the batch.
 const MAX_PAGES = 10;   // homepage + up to 9 picks; <=10 credits/audit on basic proxy
-const urls = [meta.rootUrl, ...cands.slice(0, MAX_PAGES - 1)].slice(0, MAX_PAGES);
+const urls = [meta.rootUrl, ...cleanCands.slice(0, MAX_PAGES - 1)].slice(0, MAX_PAGES);
+// `pagesExcluded` is surfaced upstream to the report so the user understands why we audited 7 not 10:
+// honest > silent. The COUNT is reported, not the paths themselves (no second leak).
+const pagesExcluded = sensitiveSkipped.length;
 // Build the Firecrawl batch-scrape request body HERE (full JS in a Code node), not as an inline object
 // literal in the httpRequest node's expression. n8n's expression engine mishandled the nested formats[]
 // array-of-objects and submitted 0 URLs (Firecrawl returned total:0, no error). Batch submit just sends
@@ -137,7 +155,7 @@ const fcBody = JSON.stringify({
     { type: 'scroll', direction: 'down' }, { type: 'wait', milliseconds: 700 },
   ],
 });
-return [{ json: { urls, fcBody } }];
+return [{ json: { urls, fcBody, pagesExcluded } }];
 """.strip()
 
 # Deterministic checks. Mirrors the rubric (AUDIT-SPEC.md) and src/lib/audit/checks.ts.
@@ -166,7 +184,17 @@ const mt      = p => p.metadata || {};
 const text    = p => (p.markdown || (p.html || '').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
 const words   = s => (s || '').split(/\s+/).filter(Boolean).length;
 // Compact path of a URL for per-page evidence ("/about", "/" for root); regex-only (no URL global).
-const pathOf  = (u) => { const m = String(u || '').match(/^https?:\/\/[^/]+(\/[^?#]*)?/i); if (!m) return String(u || '') || '/'; const p = (m[1] || '/').replace(/\/+$/, ''); return p === '' ? '/' : p; };
+// Control chars stripped + capped at 200 bytes so a pathological URL can't bloat jsonb / smuggle
+// non-printables into the report. Mirrors src/lib/audit/checks.ts pathOf.
+const PATH_MAX = 200;
+const pathOf  = (u) => {
+  const s = String(u || '');
+  const scrub = (x) => x.replace(/[\x00-\x1f\x7f]/g, '');
+  const m = s.match(/^https?:\/\/[^/]+(\/[^?#]*)?/i);
+  if (!m) return (scrub(s).slice(0, PATH_MAX)) || '/';
+  const p = scrub((m[1] || '/').replace(/\/+$/, ''));
+  return (p === '' ? '/' : p).slice(0, PATH_MAX);
+};
 // Per-page coverage. covR's diagnostic returns null (= pass) or a structured FailureReason object
 // (= fail with reason). Wrapped in try/catch so a single broken page never aborts the whole audit -
 // a thrown diagnostic is treated as PASS (fail-open) with the error logged. cov is the legacy boolean

@@ -44,12 +44,16 @@ const hostOf = (u: string): string =>
   (u.match(/^https?:\/\/([^/?#]+)/i)?.[1] ?? "").replace(/^www\./, "").toLowerCase();
 
 /** Compact path of a URL for per-page evidence: "/about" (query/hash dropped, trailing slash trimmed),
- *  "/" for the root, or the raw input when it is not an absolute URL. Regex-only (no URL global). */
+ *  "/" for the root, or the raw input when it is not an absolute URL. Regex-only (no URL global).
+ *  Control chars stripped + capped at 200 bytes so a pathological URL (4KB path, NULL byte from a
+ *  broken server) cannot bloat the jsonb or smuggle non-printable chars into the report. */
+const PATH_MAX = 200;
 const pathOf = (u: string): string => {
   const m = u.match(/^https?:\/\/[^/]+(\/[^?#]*)?/i);
-  if (!m) return u || "/";
-  const p = (m[1] ?? "/").replace(/\/+$/, "");
-  return p === "" ? "/" : p;
+  const scrub = (s: string) => s.replace(/[\x00-\x1f\x7f]/g, "");
+  if (!m) return scrub(u || "/").slice(0, PATH_MAX) || "/";
+  const p = scrub((m[1] ?? "/").replace(/\/+$/, ""));
+  return (p === "" ? "/" : p).slice(0, PATH_MAX);
 };
 
 /**
