@@ -145,3 +145,72 @@ describe("Tier-1 structural improvements", () => {
     expect(r(runChecks([pw(`<html><head>${stale}</head><body>x</body></html>`)], "https://x.example"), "G7")).toBeLessThan(0.3);
   });
 });
+
+/**
+ * Tier-3 accuracy fixes (2026-05-28 multi-agent audit): false positives a paying / partner reviewer
+ * would catch. Each is mirrored in the n8n port and guarded by parity.test.ts.
+ */
+describe("Tier-3 accuracy fixes", () => {
+  const rr = (checks: CheckResult[], id: string) => checks.find((c) => c.id === id)?.ratio ?? null;
+  // Multi-page builder with explicit title/description/canonical/markdown control.
+  const mp = (
+    path: string,
+    opts: { title?: string; desc?: string; canonical?: string; markdown?: string } = {},
+  ): CrawledPage => {
+    const head =
+      (opts.title === undefined ? "" : `<title>${opts.title}</title>`) +
+      (opts.desc === undefined ? "" : `<meta name="description" content="${opts.desc}">`) +
+      (opts.canonical === undefined ? "" : `<link rel="canonical" href="${opts.canonical}">`);
+    const rawHtml = `<!DOCTYPE html><html lang="en"><head>${head}</head><body><h1>H</h1></body></html>`;
+    return {
+      metadata: { sourceURL: `https://x.example${path}`, title: opts.title, description: opts.desc },
+      rawHtml,
+      html: rawHtml,
+      markdown: opts.markdown ?? "Body.",
+    };
+  };
+
+  // --- AE-1: S15/S16 must NOT reward all-missing meta as 100% unique ---
+  it("S15/S16 are N/A (not a false 1.0) when NO page has a title / description", () => {
+    const pages = [mp("/"), mp("/about"), mp("/contact")]; // no titles, no descriptions at all
+    const c = runChecks(pages, "https://x.example");
+    expect(rr(c, "S15")).toBeNull(); // uniqueness of zero titles is not assessable
+    expect(rr(c, "S16")).toBeNull();
+  });
+  it("S15 = 1 when multiple pages have distinct titles", () => {
+    const pages = [mp("/", { title: "Home - Acme" }), mp("/about", { title: "About - Acme" })];
+    expect(rr(runChecks(pages, "https://x.example"), "S15")).toBe(1);
+  });
+  it("S15 penalizes duplicate titles across pages", () => {
+    const pages = [mp("/", { title: "Acme" }), mp("/about", { title: "Acme" })];
+    expect(rr(runChecks(pages, "https://x.example"), "S15")).toBe(0);
+  });
+
+  // --- AE-2: S23 must NOT false-fail a valid protocol-relative self-canonical ---
+  it("S23 passes a protocol-relative self-canonical (//host/path)", () => {
+    const p = mp("/p", { canonical: "//x.example/p" });
+    expect(rr(runChecks([p], "https://x.example/"), "S23")).toBe(1);
+  });
+  it("S23 still fails a genuine protocol-relative cross-page canonical", () => {
+    const p = mp("/p", { canonical: "//x.example/other" });
+    expect(rr(runChecks([p], "https://x.example/"), "S23")).toBe(0);
+  });
+
+  // --- AE-3: S17 must NOT flag a thin ARTICLE whose topic is errors ---
+  it("S17 does NOT flag a short article about 404 errors (>=50 words)", () => {
+    const article = "How to fix a 404 error on your site. ".concat("A 404 means the page was not found. ".repeat(8));
+    const p = mp("/blog/fix-404", { title: "How to fix a 404 error", markdown: article });
+    // ~70 words, topic mentions 404/not found, but it is real content - must pass.
+    expect(rr(runChecks([p], "https://x.example"), "S17")).toBe(1);
+  });
+
+  // --- AE-4: G6 must NOT count bare unit-suffixed numbers as statistics ---
+  it("G6 does NOT count bare units (5m, 3x, 7k) as statistics", () => {
+    const p = mp("/", { markdown: "Runs in 5m. Up to 3x. About 7k away. A 2m walk." });
+    expect(rr(runChecks([p], "https://x.example"), "G6")).toBe(0); // <3 real stats
+  });
+  it("G6 counts real statistics (%, currency, magnitudes, ratios)", () => {
+    const p = mp("/", { markdown: "40% faster, $2M raised, 10k active users, 3 in 5 teams agree." });
+    expect(rr(runChecks([p], "https://x.example"), "G6")).toBe(1); // 4 real stats >= 3
+  });
+});
