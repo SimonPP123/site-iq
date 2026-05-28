@@ -6,13 +6,14 @@ const h = vi.hoisted(() => ({
   from: vi.fn(),
   maybeSingle: vi.fn(),
   insert: vi.fn(),
+  rpc: vi.fn(),
   rateLimit: vi.fn(),
-  chatMessagesForReport: vi.fn(),
+  docCount: 5 as number,
   env: { CHAT_ENABLED: "true" as string },
 }));
 
 vi.mock("@/lib/supabase/server", () => ({
-  createClient: vi.fn(async () => ({ auth: { getClaims: h.getClaims }, from: h.from })),
+  createClient: vi.fn(async () => ({ auth: { getClaims: h.getClaims }, from: h.from, rpc: h.rpc })),
 }));
 vi.mock("@/lib/rate-limit", () => ({ rateLimit: h.rateLimit, getRateLimitHeaders: () => ({}) }));
 vi.mock("@/lib/env", () => ({ env: h.env }));
@@ -23,7 +24,6 @@ vi.mock("@/lib/security", () => ({
 }));
 vi.mock("@/lib/plan", () => ({
   FREE_PLAN: { auditsPerMonth: 3, chatMessagesPerAudit: 5 },
-  chatMessagesForReport: h.chatMessagesForReport,
 }));
 vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn() }));
 
@@ -45,9 +45,12 @@ beforeEach(() => {
   h.rateLimit.mockResolvedValue(ok());
   h.maybeSingle.mockResolvedValue({ data: { id: REPORT_ID, status: "done", result: null }, error: null });
   h.insert.mockResolvedValue({ error: null });
-  h.chatMessagesForReport.mockResolvedValue(0);
+  h.rpc.mockResolvedValue({ data: 123, error: null }); // reserved user-message id (> 0)
+  h.docCount = 5; // page corpus present by default
   h.from.mockImplementation((table: string) => {
     if (table === "reports") return { select: () => ({ eq: () => ({ maybeSingle: h.maybeSingle }) }) };
+    if (table === "documents")
+      return { select: () => ({ filter: () => Promise.resolve({ count: h.docCount, error: null }) }) };
     if (table === "chat_messages") return { insert: h.insert };
     return {};
   });
@@ -81,18 +84,24 @@ describe("POST /api/chat", () => {
     h.maybeSingle.mockResolvedValue({ data: { id: REPORT_ID, status: "crawling", result: null }, error: null });
     expect((await POST(req({ reportId: REPORT_ID, message: "hello there" }))).status).toBe(409);
   });
-  it("429 when the per-audit chat quota is exhausted", async () => {
-    h.chatMessagesForReport.mockResolvedValue(5);
+  it("409 when the page corpus is empty (embed failed - chat would answer blind)", async () => {
+    h.docCount = 0;
+    expect((await POST(req({ reportId: REPORT_ID, message: "hello there" }))).status).toBe(409);
+  });
+  it("429 when the per-audit chat quota is exhausted (atomic consume returns -1)", async () => {
+    h.rpc.mockResolvedValue({ data: -1, error: null });
     expect((await POST(req({ reportId: REPORT_ID, message: "hello there" }))).status).toBe(429);
   });
   it("502 when the n8n assistant fails", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500 })));
     expect((await POST(req({ reportId: REPORT_ID, message: "hello there" }))).status).toBe(502);
   });
-  it("200 with the answer on success and persists the turn", async () => {
+  it("200 with the answer on success; persists ONLY the assistant turn (user already reserved)", async () => {
     const res = await POST(req({ reportId: REPORT_ID, message: "hello there" }));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ answer: "Here is the answer." });
+    // consume_chat_message inserted the user row; the route inserts only the assistant row.
+    expect(h.rpc).toHaveBeenCalledWith("consume_chat_message", expect.objectContaining({ p_report_id: REPORT_ID }));
     expect(h.insert).toHaveBeenCalledOnce();
   });
 });
