@@ -150,10 +150,34 @@ export interface ActionItem {
 
 export type Grade = "A" | "B" | "C" | "D" | "F";
 
+/**
+ * One crawled page in the audit sample. Currently just the normalized path - the same one that
+ * `evidence.failing[].path` uses, so the UI can build an inverse map "this page failed: S2, T7, G15".
+ * Kept as an object (not a bare string) so we can add `sampled` / `status` later without a breaking
+ * change to consumers (rejected Variant C in 2026-05-28 multi-agent review).
+ */
+export interface AuditedPage {
+  /** Normalized path, matching what `CheckEvidence.failing[].path` uses (query/hash dropped,
+   *  trailing slash trimmed, control chars stripped, capped at 200 bytes). */
+  path: string;
+}
+
 export interface AuditResult {
   overall: number; // 0..100
   grade: Grade;
   capped: boolean; // a critical check failed somewhere
   dimensions: DimensionResult[];
   actionPlan: ActionItem[];
+  /** All crawled pages in the sample (de-duped by normalized path). Lets the UI show WHICH pages
+   *  were audited, not just the count. Optional so old reports (pre-Phase-2B) parse without churn -
+   *  parseAuditResult is passthrough on extras. */
+  pages?: AuditedPage[];
+  /** Number of unique pages that failed at least one check. Computed at runChecks time from the
+   *  FULL (pre-truncation) failing arrays - so a high `more` overflow on individual checks does not
+   *  silently undercount. NEVER derive this from the truncated evidence.failing[] arrays. */
+  pagesWithIssues?: number;
+  /** Number of candidate URLs that the n8n PICK step filtered out by the SENSITIVE_PATH_RE deny-list
+   *  (Phase 2A). Surfaced so the user understands why we audited 7 not 10. Paths themselves are NEVER
+   *  persisted - only the count - so a shared report cannot leak admin / staging / customer URLs. */
+  pagesExcluded?: number;
 }

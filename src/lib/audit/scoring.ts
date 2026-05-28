@@ -15,6 +15,7 @@
 
 import type {
   ActionItem,
+  AuditedPage,
   AuditResult,
   CheckResult,
   DimensionId,
@@ -22,6 +23,19 @@ import type {
   Grade,
   Severity,
 } from "./types";
+
+/** Optional per-audit metadata stitched into the final AuditResult by scoreAudit. None of these
+ *  affect the score - they are report metadata that the renderer uses to show the "Pages audited"
+ *  list and the count of unreachable / filtered URLs. Defaulted to {} so existing callers (tests,
+ *  parity, action-plan unit tests) compile unchanged. */
+export interface AuditPageInfo {
+  pages?: AuditedPage[];
+  pagesWithIssues?: number;
+  /** From the n8n PICK step's SENSITIVE_PATH_RE filter (Phase 2A). Surfaced as a count only -
+   *  the paths themselves are never persisted, to avoid leaking admin / staging URLs in a shared
+   *  report. */
+  pagesExcluded?: number;
+}
 
 /** Overall weighting of the four dimensions (sums to 1). */
 export const DIMENSION_WEIGHTS: Record<DimensionId, number> = {
@@ -152,7 +166,7 @@ export function buildActionPlan(checks: CheckResult[]): ActionItem[] {
 }
 
 /** Full audit score: per-dimension + weighted overall + critical floor + action plan. */
-export function scoreAudit(allChecks: CheckResult[]): AuditResult {
+export function scoreAudit(allChecks: CheckResult[], pageInfo: AuditPageInfo = {}): AuditResult {
   const dimensions = (Object.keys(DIMENSION_WEIGHTS) as DimensionId[]).map((id) =>
     scoreDimension(
       id,
@@ -183,11 +197,17 @@ export function scoreAudit(allChecks: CheckResult[]): AuditResult {
       : overallMath,
   );
 
-  return {
+  // Stitch in per-audit page metadata only when the caller passed it - keeps the AuditResult
+  // payload identical to pre-Phase-2B for callers that do not opt in (the test suite, parity).
+  const result: AuditResult = {
     overall, // already an integer (Math.round above); the headline score has no decimal
     grade: gradeFor(overall),
     capped,
     dimensions,
     actionPlan: buildActionPlan(allChecks),
   };
+  if (pageInfo.pages !== undefined) result.pages = pageInfo.pages;
+  if (pageInfo.pagesWithIssues !== undefined) result.pagesWithIssues = pageInfo.pagesWithIssues;
+  if (pageInfo.pagesExcluded !== undefined) result.pagesExcluded = pageInfo.pagesExcluded;
+  return result;
 }

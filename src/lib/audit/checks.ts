@@ -13,12 +13,26 @@
  */
 
 import type {
+  AuditedPage,
   CheckEvidence,
   CheckResult,
   CrawledPage,
   FailingPage,
   FailureReason,
 } from "./types";
+
+/**
+ * Output of `runChecks`. The check list + per-page rollups computed from the FULL (pre-truncation)
+ * data: `pages` lists every successfully-crawled URL's normalized path, `pagesWithIssues` counts
+ * unique paths that failed >=1 check. Computed here (not later in scoreAudit) because mkEvidence
+ * truncates failing[] to EVID_CAP=12 with the overflow in `more` - a future MAX_PAGES bump would
+ * make union-of-truncated-failing arrays silently undercount. See Phase 2B plan + red-line #3.
+ */
+export interface RunChecksOutput {
+  checks: CheckResult[];
+  pages: AuditedPage[];
+  pagesWithIssues: number;
+}
 
 const rawHtml = (p: CrawledPage) => p.rawHtml ?? "";
 const html = (p: CrawledPage) => p.html ?? p.rawHtml ?? "";
@@ -120,12 +134,24 @@ function robotsBlocksAiCrawler(robotsTxt: string): boolean {
   return false;
 }
 
-/** Run the full deterministic audit over a crawled sample. */
-export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}): CheckResult[] {
+/** Run the full deterministic audit over a crawled sample. Returns the check list + per-page rollups
+ *  (`pages`, `pagesWithIssues`) that the report UI uses to show which URLs were audited. The legacy
+ *  `runChecks` re-export (below) returns only the check list, so existing call sites + tests stay
+ *  unchanged. New consumers (n8n mirror, contract.ts, sample/page.tsx) should use `runAudit`. */
+export function runAudit(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}): RunChecksOutput {
   const sample = pages.filter(
     (p) => p && (p.html || p.rawHtml || p.markdown || p.metadata),
   );
   const n = sample.length || 1;
+  // Per-page rollups, computed from the FULL pre-truncation data. `sampledPaths` are the unique
+  // normalized paths of every successfully-crawled page (the report's "pages we audited" list).
+  // `pagesWithIssuesSet` is populated inside covR/cov so it captures every failing page across every
+  // check - NEVER derive this from the per-check `failing[]` arrays, which mkEvidence truncates to
+  // EVID_CAP=12 with the overflow in `more` (a future MAX_PAGES bump would otherwise undercount).
+  const sampledPaths = new Set<string>();
+  for (const p of sample) sampledPaths.add(pathOf(meta(p).sourceURL ?? rootUrl));
+  const auditedPages: AuditedPage[] = [...sampledPaths].sort().map((path) => ({ path }));
+  const pagesWithIssuesSet = new Set<string>();
   // Per-page coverage. The diagnostic returns `null` to mean "this page passes the check" or a
   // structured `FailureReason` to mean "this page failed, here is why" - so the same pass over the
   // sample populates both the ratio (pass/n) and the per-URL failure list with reasons. The ratio
@@ -173,7 +199,11 @@ export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}
         continue;
       }
       if (reason === null) pass++;
-      else failing.push({ path, reason: sanitizeReason(reason) });
+      else {
+        const fp: FailingPage = { path, reason: sanitizeReason(reason) };
+        failing.push(fp);
+        pagesWithIssuesSet.add(path); // accumulated BEFORE mkEvidence's EVID_CAP truncation
+      }
     }
     return { r: clamp01(pass / n), failing };
   };
@@ -184,7 +214,11 @@ export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}
     let pass = 0;
     for (const p of sample) {
       if (fn(p)) pass++;
-      else failing.push({ path: pathOf(meta(p).sourceURL ?? rootUrl) });
+      else {
+        const path = pathOf(meta(p).sourceURL ?? rootUrl);
+        failing.push({ path });
+        pagesWithIssuesSet.add(path); // accumulated BEFORE mkEvidence's EVID_CAP truncation
+      }
     }
     return { r: clamp01(pass / n), failing };
   };
@@ -804,5 +838,12 @@ export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}
       ch.evidence = { where: `Across all ${n} crawled page${n === 1 ? "" : "s"}`, checked: n };
     }
   }
-  return out;
+  return { checks: out, pages: auditedPages, pagesWithIssues: pagesWithIssuesSet.size };
+}
+
+/** Backward-compatible wrapper: the old `runChecks` returns only the CheckResult[] so existing
+ *  callers (rubric.ts, the test suite) stay green without churn. New code uses `runAudit` for the
+ *  full output including the per-page rollups. */
+export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}): CheckResult[] {
+  return runAudit(pages, rootUrl, aux).checks;
 }

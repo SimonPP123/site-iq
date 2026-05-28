@@ -195,6 +195,20 @@ const pathOf  = (u) => {
   const p = scrub((m[1] || '/').replace(/\/+$/, ''));
   return (p === '' ? '/' : p).slice(0, PATH_MAX);
 };
+// Per-page rollups - mirrors src/lib/audit/checks.ts. `auditedPages` is the unique normalized paths
+// of every scraped page (the report's "pages we audited" list). `pagesWithIssuesSet` is populated
+// inside covR/cov so it captures every failing page across every check from the FULL pre-truncation
+// data - NEVER derive this from each check's `failing[]` after mkEvidence's EVID_CAP=12 truncation,
+// or a future MAX_PAGES bump (Pro tier) silently undercounts.
+const sampledPaths = new Set();
+for (const p of pages) sampledPaths.add(pathOf(mt(p).sourceURL || meta.rootUrl || ''));
+const auditedPages = [...sampledPaths].sort().map(path => ({ path }));
+const pagesWithIssuesSet = new Set();
+// `pagesExcluded` is the count of URLs the SENSITIVE_PATH_RE filter dropped in PICK_JS (Phase 2A).
+// Count only - paths themselves are never persisted, so a shared report can never leak admin /
+// staging / customer URLs through this channel.
+let pagesExcluded = 0;
+try { pagesExcluded = (($('Pick URLs').first().json || {}).pagesExcluded) | 0; } catch (e) {}
 // Per-page coverage. covR's diagnostic returns null (= pass) or a structured FailureReason object
 // (= fail with reason). Wrapped in try/catch so a single broken page never aborts the whole audit -
 // a thrown diagnostic is treated as PASS (fail-open) with the error logged. cov is the legacy boolean
@@ -218,7 +232,7 @@ const covR = diag => {
     let reason = null;
     try { reason = diag(p); } catch (e) { pass++; continue; }
     if (reason === null) pass++;
-    else failing.push({ path, reason: sanitizeReason(reason) });
+    else { failing.push({ path, reason: sanitizeReason(reason) }); pagesWithIssuesSet.add(path); }
   }
   return { r: pass / N, failing };
 };
@@ -226,7 +240,7 @@ const cov = fn => {
   const failing = []; let pass = 0;
   for (const p of pages) {
     if (fn(p)) pass++;
-    else failing.push({ path: pathOf(mt(p).sourceURL || meta.rootUrl || '') });
+    else { const path = pathOf(mt(p).sourceURL || meta.rootUrl || ''); failing.push({ path }); pagesWithIssuesSet.add(path); }
   }
   return { r: pass / N, failing };
 };
@@ -479,7 +493,7 @@ for (const ch of checks) {
   else if (!ch.evidence) ch.evidence = { where: 'Across all ' + N + ' crawled page' + (N === 1 ? '' : 's'), checked: N };
 }
 
-return [{ json: { reportId: meta.reportId, domain: meta.domain, pagesSampled: pages.length, pagesAttempted, checks } }];
+return [{ json: { reportId: meta.reportId, domain: meta.domain, pagesSampled: pages.length, pagesAttempted, checks, pages: auditedPages, pagesWithIssues: pagesWithIssuesSet.size, pagesExcluded } }];
 """.strip()
 
 # Ports src/lib/audit/scoring.ts (kept in sync; see WALKTHROUGH.md). Deterministic.
@@ -517,7 +531,9 @@ const math = wsum === 0 ? 0 : scored.reduce((s, d) => s + W[d.id] * d.score, 0) 
 const capped = dims.some(d => d.capped);
 const mg = gradeFor(math);
 const overall = Math.round(capped && mg !== 'F' ? Math.min(math, lowerMax(mg)) : math);
-const result = { overall, grade: gradeFor(overall), capped, pagesSampled: input.pagesSampled, pagesAttempted: input.pagesAttempted, dimensions: dims, actionPlan: actionPlan(checks) };
+// Phase 2B per-audit page metadata passthrough. Optional spread so the result jsonb stays compact
+// when a key is missing (older n8n workflow versions without rollups still parse via passthrough).
+const result = { overall, grade: gradeFor(overall), capped, pagesSampled: input.pagesSampled, pagesAttempted: input.pagesAttempted, dimensions: dims, actionPlan: actionPlan(checks), ...(Array.isArray(input.pages) ? { pages: input.pages } : {}), ...(typeof input.pagesWithIssues === 'number' ? { pagesWithIssues: input.pagesWithIssues } : {}), ...(typeof input.pagesExcluded === 'number' ? { pagesExcluded: input.pagesExcluded } : {}) };
 return [{ json: { reportId: input.reportId, domain: input.domain, pagesSampled: input.pagesSampled, score_overall: overall, result } }];
 """.strip()
 

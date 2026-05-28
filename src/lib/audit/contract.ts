@@ -57,6 +57,11 @@ export const auditTriggerSchema = z.object({
  * Stricter schema for the contract test: asserts the engine's own output shape (overall/grade/
  * capped/dimensions/actionPlan) does not drift from what the app + n8n port expect. Permissive on
  * extra fields and on the inner check/action objects so it tracks the envelope, not every detail.
+ *
+ * Optional `pages` / `pagesWithIssues` / `pagesExcluded` (Phase 2B): a `.superRefine` enforces the
+ * mirror invariant "every failing.path is a known page path" so a renderer that joins the two lists
+ * (CrawledPagesSection's inverse map) never has to handle a dangling reference. Old reports without
+ * `pages` skip the check.
  */
 export const strictAuditResultSchema = z
   .object({
@@ -80,5 +85,34 @@ export const strictAuditResultSchema = z
     actionPlan: z.array(
       z.object({ checkId: z.string(), finding: z.string(), severity: z.string() }).passthrough(),
     ),
+    pages: z.array(z.object({ path: z.string().min(1).max(250) }).passthrough()).optional(),
+    pagesWithIssues: z.number().int().min(0).optional(),
+    pagesExcluded: z.number().int().min(0).optional(),
   })
-  .passthrough();
+  .passthrough()
+  .superRefine((r, ctx) => {
+    // Mirror invariant: when the report carries a `pages` list, every failing.path referenced by an
+    // evidence block must be in it. If this drifts, the UI's inverse map (path -> failing checks)
+    // ends up with orphan references and either crashes or silently swallows pages. Caught here so
+    // it surfaces as a contract test failure, not a production rendering bug.
+    if (!r.pages) return;
+    const known = new Set(r.pages.map((p) => p.path));
+    for (const d of r.dimensions) {
+      const checks = (d as { checks?: Array<{ id?: string; evidence?: { failing?: Array<{ path?: string }> } }> }).checks ?? [];
+      for (const c of checks) {
+        const failing = c.evidence?.failing;
+        if (!Array.isArray(failing)) continue;
+        for (const fp of failing) {
+          const p = fp?.path;
+          if (typeof p === "string" && !known.has(p)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["dimensions", d.id ?? "?", "checks", c.id ?? "?", "evidence", "failing", "path"],
+              message: `failing.path "${p}" is not in result.pages`,
+            });
+            return; // first violation is enough; don't spam every check.
+          }
+        }
+      }
+    }
+  });

@@ -25,6 +25,22 @@ const SAMPLE: Report = {
     capped: false,
     pagesSampled: 8,
     pagesAttempted: 10,
+    // Phase 2B per-audit page metadata. Lets the CrawledPagesSection show WHICH 8 pages were audited
+    // and surface the 1-of-10 that the SENSITIVE_PATH_RE filter dropped (a fictional /admin path on
+    // this fictional store). The mirror invariant - every evidence.failing[].path appears below -
+    // is exercised by the contract test on the engine output.
+    pages: [
+      { path: "/" },
+      { path: "/menu" },
+      { path: "/about" },
+      { path: "/locations" },
+      { path: "/wholesale" },
+      { path: "/blog/cold-brew-guide" },
+      { path: "/contact" },
+      { path: "/careers" },
+    ],
+    pagesWithIssues: 8,
+    pagesExcluded: 1,
     dimensions: [
       {
         id: "seo",
