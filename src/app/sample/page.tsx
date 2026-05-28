@@ -58,7 +58,7 @@ const SAMPLE: Report = {
           { id: "S1", label: "Title tag present and well-sized", ratio: 1, evidence: { where: "Across all 8 crawled pages", checked: 8 } },
           { id: "S4", label: "Indexable (no noindex)", ratio: 1, evidence: { where: "Across all 8 crawled pages", checked: 8 } },
           { id: "S2", label: "Meta description (70-160 chars)", ratio: 1, evidence: { where: "Across all 8 crawled pages", checked: 8 } },
-          { id: "S12", label: "Open Graph tags", ratio: 0, evidence: { where: "Across all 8 crawled pages", checked: 8, failing: [
+          { id: "S12", label: "Open Graph tags", ratio: 0, severity: "high", evidence: { where: "Across all 8 crawled pages", checked: 8, failing: [
             { path: "/",                       reason: { kind: "missing", what: "og:title and og:image" } },
             { path: "/menu",                   reason: { kind: "missing", what: "og:title and og:image" } },
             { path: "/about",                  reason: { kind: "missing", what: "og:title and og:image" } },
@@ -93,13 +93,13 @@ const SAMPLE: Report = {
         capped: false,
         checks: [
           { id: "G3", label: "Server-side rendered content", ratio: 1, evidence: { where: "The no-JS initial HTML of the home page vs. the rendered page" } },
-          { id: "G6", label: "Concrete stats and figures", ratio: 0.5, evidence: { where: "Across all 8 crawled pages", checked: 8, failing: [
+          { id: "G6", label: "Concrete stats and figures", ratio: 0.5, severity: "low", evidence: { where: "Across all 8 crawled pages", checked: 8, failing: [
             { path: "/",          reason: { kind: "wrong_count", what: "concrete statistics (%, currency, ratios)", actual: 1, expected: 3 } },
             { path: "/menu",      reason: { kind: "wrong_count", what: "concrete statistics (%, currency, ratios)", actual: 0, expected: 3 } },
             { path: "/locations", reason: { kind: "wrong_count", what: "concrete statistics (%, currency, ratios)", actual: 2, expected: 3 } },
             { path: "/contact",   reason: { kind: "wrong_count", what: "concrete statistics (%, currency, ratios)", actual: 0, expected: 3 } },
           ] } },
-          { id: "G15", label: "Authoritative citations", ratio: 0, evidence: { where: "Across all 8 crawled pages", checked: 8, failing: [
+          { id: "G15", label: "Authoritative citations", ratio: 0, severity: "medium", evidence: { where: "Across all 8 crawled pages", checked: 8, failing: [
             { path: "/",                       reason: { kind: "missing", what: "outbound citation to an authoritative source" } },
             { path: "/menu",                   reason: { kind: "missing", what: "outbound citation to an authoritative source" } },
             { path: "/about",                  reason: { kind: "missing", what: "outbound citation to an authoritative source" } },
