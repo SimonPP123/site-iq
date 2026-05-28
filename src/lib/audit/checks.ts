@@ -568,9 +568,14 @@ export function runAudit(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {})
         // require >=2 digits (so "10k", "1.5m" count but "5m"/"3k" do not); "N in M" ratios stay;
         // the ambiguous bare "x" is dropped (a real ratio is caught by the "N in M" form).
         const stats =
-          (m.match(/\d[\d.,]*\s*(?:%|‰|percent)\b/gi) ?? []).length +
+          // Percentages: %/‰ are symbols (no boundary needed); the WORD "percent" gets a
+          // negative-lookahead so "percentage" doesn't match. (Earlier a `\b` was placed AFTER % -
+          // which only matches before a word char, so it matched ZERO real percentages: regression.)
+          (m.match(/\d[\d.,]*\s*(?:%|‰|percent)(?![a-z])/gi) ?? []).length +
           (m.match(/[€$£¥]\s?\d[\d.,]*/g) ?? []).length +
-          (m.match(/\b\d{2,}[\d.,]*\s*(?:k|m|bn|million|billion|thousand)(?![a-z])/gi) ?? []).length +
+          // Magnitudes: count only "big" numbers - >=2 leading digits (10k, 250m) OR a decimal
+          // (1.5m, 2.5k) - so genuine stats count but bare ambiguous single digits ("5m", "3k") do not.
+          (m.match(/\b(?:\d{2,}|\d+[.,]\d+)[\d.,]*\s*(?:k|m|bn|million|billion|thousand)(?![a-z])/gi) ?? []).length +
           (m.match(/\b\d+\s*(?:in|of|out of)\s*\d+\b/gi) ?? []).length;
         return stats >= 3 ? null : { kind: "wrong_count", what: "concrete statistics (%, currency, ratios)", actual: stats, expected: 3 };
       }), 4),

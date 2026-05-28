@@ -213,4 +213,14 @@ describe("Tier-3 accuracy fixes", () => {
     const p = mp("/", { markdown: "40% faster, $2M raised, 10k active users, 3 in 5 teams agree." });
     expect(rr(runChecks([p], "https://x.example"), "G6")).toBe(1); // 4 real stats >= 3
   });
+  it("G6 counts percentages ALONE (regression guard: % detection must not be dead)", () => {
+    // Pins the AE-4 regression where a `\b` after % matched zero real percentages. The ONLY stats
+    // here are percentages, so if % detection breaks again this drops to 0 and fails.
+    const p = mp("/", { markdown: "Conversions up 23%, bounce down 40%, churn at 2.5% this quarter." });
+    expect(rr(runChecks([p], "https://x.example"), "G6")).toBe(1); // 3 percentages clear the >=3 bar
+  });
+  it("G6 counts decimal magnitudes (1.5m) but still excludes bare single digits (5m)", () => {
+    expect(rr(runChecks([mp("/", { markdown: "1.5m users, 2.5k teams, 7.3bn events handled." })], "https://x.example"), "G6")).toBe(1);
+    expect(rr(runChecks([mp("/", { markdown: "a 5m walk, 3k away, a 2m ceiling" })], "https://x.example"), "G6")).toBe(0);
+  });
 });

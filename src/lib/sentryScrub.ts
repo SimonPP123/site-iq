@@ -77,13 +77,20 @@ function scrubInPlace(node: unknown, depth: number, seen: WeakSet<object>): void
  * EU/partner clients that crawled path is the GDPR-adjacent leak the whole scrubber exists to
  * prevent, via the one channel the structured walk does not cover.
  * `https://victim.example/customer/42?token=x` -> `https://victim.example/[redacted]`
+ * Handles query-only URLs (no path slash) and strips userinfo, since those also carry secrets:
+ * `https://victim.example?token=secret` -> `https://victim.example/[redacted]`
+ * `https://user:pass@host/p`            -> `https://host/[redacted]`
  */
-const URL_PATH_RE = /(https?:\/\/[^/\s"')]+)(\/[^\s"')]*)?/gi;
+// Host class excludes / ? # so a query-only URL (no path slash) still splits origin from the
+// secret-bearing remainder; the remainder group triggers on any of / ? # (not just /).
+const URL_PATH_RE = /(https?:\/\/[^/?#\s"')]+)([/?#][^\s"')]*)?/gi;
 export function redactUrlPaths(s: string): string {
   if (typeof s !== "string" || s.length === 0) return s;
-  return s.replace(URL_PATH_RE, (_m, origin: string, path?: string) =>
-    path && path.length > 1 ? `${origin}/[redacted]` : origin,
-  );
+  return s.replace(URL_PATH_RE, (_m, origin: string, rest?: string) => {
+    // Strip embedded userinfo (user:pass@) - it is a credential, never debugging signal.
+    const cleanOrigin = origin.replace(/(https?:\/\/)[^@/]*@/i, "$1");
+    return rest && rest.length > 0 ? `${cleanOrigin}/[redacted]` : cleanOrigin;
+  });
 }
 
 /** Scrub event-level extras / contexts / tags + the message/exception free-text values. Safe to
@@ -117,5 +124,18 @@ export function scrubAuditPaths<T extends Event>(event: T, _hint?: EventHint): T
 export function scrubBreadcrumb(breadcrumb: Breadcrumb): Breadcrumb | null {
   const seen = new WeakSet<object>();
   if (breadcrumb.data) scrubInPlace(breadcrumb.data, 0, seen);
+  // Breadcrumbs are the most common URL carrier (fetch/xhr/navigation crumbs). The field-name walk
+  // above does NOT catch `data.url` / `data.to` / `data.from` (full requested URL + query) or the
+  // free-text `message`, so redact those explicitly - this is the crawled-URL leak channel that
+  // fires on every server-side fetch to a user-influenced URL.
+  const data = breadcrumb.data as Record<string, unknown> | undefined;
+  if (data) {
+    for (const k of ["url", "to", "from"]) {
+      if (typeof data[k] === "string") data[k] = redactUrlPaths(data[k] as string);
+    }
+  }
+  if (typeof breadcrumb.message === "string") {
+    breadcrumb.message = redactUrlPaths(breadcrumb.message);
+  }
   return breadcrumb;
 }

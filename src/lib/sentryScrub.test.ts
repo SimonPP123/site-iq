@@ -127,6 +127,16 @@ describe("scrubBreadcrumb", () => {
     const out = scrubBreadcrumb(breadcrumb);
     expect(out).toEqual(breadcrumb);
   });
+  it("redacts a full URL path in breadcrumb.data.url (fetch/xhr crumb - the common URL carrier)", () => {
+    const b: Breadcrumb = { category: "fetch", data: { url: "https://acme.example/admin/users?id=7", status_code: 200 } };
+    const out = scrubBreadcrumb(b);
+    expect((out as Breadcrumb).data?.url).toBe("https://acme.example/[redacted]");
+    expect((out as Breadcrumb).data?.status_code).toBe(200); // preserved
+  });
+  it("redacts a URL embedded in breadcrumb.message (console/navigation crumb)", () => {
+    const b: Breadcrumb = { category: "console", message: "GET https://acme.example/checkout/cart?sku=9 failed" };
+    expect(scrubBreadcrumb(b)?.message).toBe("GET https://acme.example/[redacted] failed");
+  });
 });
 
 describe("redactUrlPaths (free-text message/exception scrub)", () => {
@@ -145,6 +155,12 @@ describe("redactUrlPaths (free-text message/exception scrub)", () => {
   });
   it("leaves non-URL text untouched", () => {
     expect(redactUrlPaths("plain error, no url here")).toBe("plain error, no url here");
+  });
+  it("redacts a query-only URL with no path slash (was a leak)", () => {
+    expect(redactUrlPaths("https://victim.example?token=secret")).toBe("https://victim.example/[redacted]");
+  });
+  it("strips userinfo credentials from the origin (was a leak)", () => {
+    expect(redactUrlPaths("auth to https://user:pass@host.example/p")).toBe("auth to https://host.example/[redacted]");
   });
 });
 
