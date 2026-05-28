@@ -209,6 +209,43 @@ const pagesWithIssuesSet = new Set();
 // staging / customer URLs through this channel.
 let pagesExcluded = 0;
 try { pagesExcluded = (($('Pick URLs').first().json || {}).pagesExcluded) | 0; } catch (e) {}
+// Phase 2E: every URL the Pick URLs step submitted to Firecrawl that did NOT come back as a usable
+// page. Maps to one of the four FailedPageReason buckets: '4xx' / '5xx' (Firecrawl returned the
+// page but with a bad status code), 'no-content' (returned but empty body), or 'timeout' (URL was
+// submitted but never appeared in the batch result). Safe to surface paths because the SENSITIVE_
+// PATH_RE filter already dropped admin/login/dashboard/staging URLs in PICK_JS - everything that
+// reaches Firecrawl has already passed the sensitive-path check.
+const submittedUrls = (($('Pick URLs').first().json || {}).urls) || [];
+const successPaths = new Set();
+for (const p of pages) successPaths.add(pathOf(mt(p).sourceURL || ''));
+const pagesFailed = [];
+const failedSeen = new Set();
+const PAGE_FAILED_CAP = 20; // hard cap so a pathological batch can't bloat the jsonb
+// First pass: items that Firecrawl returned but we couldn't score (no content or bad status).
+for (const it of items) {
+  const raw = (it.json && (it.json.data || it.json)) || {};
+  const url = raw && raw.metadata && raw.metadata.sourceURL;
+  if (!url) continue;
+  const path = pathOf(url);
+  if (successPaths.has(path) || failedSeen.has(path)) continue;
+  const code = raw.metadata && typeof raw.metadata.statusCode === 'number' ? raw.metadata.statusCode : null;
+  let reason = 'no-content';
+  if (code !== null) {
+    if (code >= 500) reason = '5xx';
+    else if (code >= 400) reason = '4xx';
+  }
+  pagesFailed.push({ path, reason });
+  failedSeen.add(path);
+  if (pagesFailed.length >= PAGE_FAILED_CAP) break;
+}
+// Second pass: URLs we submitted that never came back at all (Firecrawl-side timeout / silent drop).
+for (const u of submittedUrls) {
+  if (pagesFailed.length >= PAGE_FAILED_CAP) break;
+  const path = pathOf(u);
+  if (successPaths.has(path) || failedSeen.has(path)) continue;
+  pagesFailed.push({ path, reason: 'timeout' });
+  failedSeen.add(path);
+}
 // Per-page coverage. covR's diagnostic returns null (= pass) or a structured FailureReason object
 // (= fail with reason). Wrapped in try/catch so a single broken page never aborts the whole audit -
 // a thrown diagnostic is treated as PASS (fail-open) with the error logged. cov is the legacy boolean
@@ -493,7 +530,7 @@ for (const ch of checks) {
   else if (!ch.evidence) ch.evidence = { where: 'Across all ' + N + ' crawled page' + (N === 1 ? '' : 's'), checked: N };
 }
 
-return [{ json: { reportId: meta.reportId, domain: meta.domain, pagesSampled: pages.length, pagesAttempted, checks, pages: auditedPages, pagesWithIssues: pagesWithIssuesSet.size, pagesExcluded } }];
+return [{ json: { reportId: meta.reportId, domain: meta.domain, pagesSampled: pages.length, pagesAttempted, checks, pages: auditedPages, pagesWithIssues: pagesWithIssuesSet.size, pagesExcluded, pagesFailed } }];
 """.strip()
 
 # Ports src/lib/audit/scoring.ts (kept in sync; see WALKTHROUGH.md). Deterministic.
@@ -531,9 +568,11 @@ const math = wsum === 0 ? 0 : scored.reduce((s, d) => s + W[d.id] * d.score, 0) 
 const capped = dims.some(d => d.capped);
 const mg = gradeFor(math);
 const overall = Math.round(capped && mg !== 'F' ? Math.min(math, lowerMax(mg)) : math);
-// Phase 2B per-audit page metadata passthrough. Optional spread so the result jsonb stays compact
-// when a key is missing (older n8n workflow versions without rollups still parse via passthrough).
-const result = { overall, grade: gradeFor(overall), capped, pagesSampled: input.pagesSampled, pagesAttempted: input.pagesAttempted, dimensions: dims, actionPlan: actionPlan(checks), ...(Array.isArray(input.pages) ? { pages: input.pages } : {}), ...(typeof input.pagesWithIssues === 'number' ? { pagesWithIssues: input.pagesWithIssues } : {}), ...(typeof input.pagesExcluded === 'number' ? { pagesExcluded: input.pagesExcluded } : {}) };
+// Phase 2B + 2E per-audit page metadata passthrough. Optional spread so the result jsonb stays
+// compact when a key is missing (older n8n workflow versions without rollups still parse via
+// passthrough). pagesFailed (2E) is only emitted when non-empty; an empty array conveys no info
+// and would inflate every payload.
+const result = { overall, grade: gradeFor(overall), capped, pagesSampled: input.pagesSampled, pagesAttempted: input.pagesAttempted, dimensions: dims, actionPlan: actionPlan(checks), ...(Array.isArray(input.pages) ? { pages: input.pages } : {}), ...(typeof input.pagesWithIssues === 'number' ? { pagesWithIssues: input.pagesWithIssues } : {}), ...(typeof input.pagesExcluded === 'number' ? { pagesExcluded: input.pagesExcluded } : {}), ...(Array.isArray(input.pagesFailed) && input.pagesFailed.length > 0 ? { pagesFailed: input.pagesFailed } : {}) };
 return [{ json: { reportId: input.reportId, domain: input.domain, pagesSampled: input.pagesSampled, score_overall: overall, result } }];
 """.strip()
 

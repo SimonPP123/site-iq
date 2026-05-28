@@ -184,6 +184,27 @@ describe("contract.strictAuditResultSchema - mirror invariant", () => {
     }
   });
 
+  it("accepts a valid pagesFailed list with structured reasons (Phase 2E)", () => {
+    const r = strictAuditResultSchema.safeParse({
+      ...skel,
+      pagesFailed: [
+        { path: "/old-promo",   reason: "4xx" },
+        { path: "/legacy/api",  reason: "5xx" },
+        { path: "/blank",       reason: "no-content" },
+        { path: "/slow",        reason: "timeout" },
+      ],
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it("rejects a pagesFailed entry with an unknown reason value", () => {
+    const r = strictAuditResultSchema.safeParse({
+      ...skel,
+      pagesFailed: [{ path: "/x", reason: "blocked" }], // 'blocked' is not in the enum
+    });
+    expect(r.success).toBe(false);
+  });
+
   it("does NOT enforce the invariant when result.pages is absent (passthrough payloads)", () => {
     // Old reports (pre-2B) carry failing[] arrays but no pages list. The schema must not invent
     // pages out of failing[] and reject them - that would break every legacy report.

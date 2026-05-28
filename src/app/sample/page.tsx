@@ -41,6 +41,12 @@ const SAMPLE: Report = {
     ],
     pagesWithIssues: 8,
     pagesExcluded: 1,
+    // Phase 2E: one fictional URL Firecrawl could not crawl - shows how the "could not be crawled"
+    // note renders. In real audits this is the SENSITIVE_PATH_RE-clean URLs whose pages timed out,
+    // returned 4xx/5xx, or came back empty.
+    pagesFailed: [
+      { path: "/old-promo", reason: "4xx" },
+    ],
     dimensions: [
       {
         id: "seo",

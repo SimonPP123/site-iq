@@ -20,6 +20,7 @@ import type {
   CheckResult,
   DimensionId,
   DimensionResult,
+  FailedPage,
   Grade,
   Severity,
 } from "./types";
@@ -35,6 +36,9 @@ export interface AuditPageInfo {
    *  the paths themselves are never persisted, to avoid leaking admin / staging URLs in a shared
    *  report. */
   pagesExcluded?: number;
+  /** Phase 2E: URLs that Firecrawl could not crawl successfully. Lets the report be honest about
+   *  partial audits instead of silently auditing fewer pages than expected. */
+  pagesFailed?: FailedPage[];
 }
 
 /** Overall weighting of the four dimensions (sums to 1). */
@@ -209,5 +213,6 @@ export function scoreAudit(allChecks: CheckResult[], pageInfo: AuditPageInfo = {
   if (pageInfo.pages !== undefined) result.pages = pageInfo.pages;
   if (pageInfo.pagesWithIssues !== undefined) result.pagesWithIssues = pageInfo.pagesWithIssues;
   if (pageInfo.pagesExcluded !== undefined) result.pagesExcluded = pageInfo.pagesExcluded;
+  if (pageInfo.pagesFailed !== undefined) result.pagesFailed = pageInfo.pagesFailed;
   return result;
 }

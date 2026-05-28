@@ -180,4 +180,32 @@ export interface AuditResult {
    *  (Phase 2A). Surfaced so the user understands why we audited 7 not 10. Paths themselves are NEVER
    *  persisted - only the count - so a shared report cannot leak admin / staging / customer URLs. */
   pagesExcluded?: number;
+  /** Phase 2E: URLs that were submitted to Firecrawl (i.e. survived the SENSITIVE_PATH_RE filter)
+   *  but did NOT return usable content. Paired with `pages` to give the user honesty about partial
+   *  audits: "We audited 5 of 10. 3 pages could not be crawled (admin redirect / sitemap timeout /
+   *  ...)". The path field is the same normalized form as `pages[].path`; the reason is a closed
+   *  enum so the UI can render a precise sentence per case and stay i18n-friendly. */
+  pagesFailed?: FailedPage[];
 }
+
+/** A submitted URL that Firecrawl could not turn into a usable page. */
+export interface FailedPage {
+  path: string;
+  reason: FailedPageReason;
+}
+
+/**
+ * Why a submitted URL failed to crawl. Closed enum so the contract refine validates it and the UI
+ * can map each kind to a localized sentence. Kept narrow on purpose - more granular categorization
+ * (e.g. specific HTTP codes, CDN block, robots disallow) belongs in Sentry breadcrumbs / logs, not
+ * in the public report.
+ */
+export type FailedPageReason =
+  /** Firecrawl returned 4xx for the page (commonly 403/404/410). */
+  | "4xx"
+  /** Firecrawl returned 5xx (server error). */
+  | "5xx"
+  /** The page came back from Firecrawl but had no html/markdown/metadata to score. */
+  | "no-content"
+  /** The URL was submitted but never appeared in the batch result (Firecrawl-side timeout / drop). */
+  | "timeout";

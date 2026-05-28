@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { AuditedPage } from "@/lib/audit/types";
+import type { AuditedPage, FailedPage } from "@/lib/audit/types";
 import {
   buildPageMatrix,
   pageSeverityHistogram,
@@ -24,11 +24,13 @@ export function CrawledPagesSection({
   pages,
   pagesWithIssues,
   pagesExcluded,
+  pagesFailed,
   dimensions,
 }: {
   pages: AuditedPage[] | undefined;
   pagesWithIssues: number | undefined;
   pagesExcluded: number | undefined;
+  pagesFailed: FailedPage[] | undefined;
   dimensions: PageMatrixDimension[];
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -102,11 +104,43 @@ export function CrawledPagesSection({
               sample is transparent, not silently shorter than expected.
             </p>
           )}
+
+          {Array.isArray(pagesFailed) && pagesFailed.length > 0 && (
+            <FailedPagesNote pagesFailed={pagesFailed} />
+          )}
         </div>
       )}
     </section>
   );
 }
+
+/** Phase 2E: surface URLs Firecrawl could not turn into a usable page. The reason enum maps to a
+ *  short English sentence; the list is shown so the audit's missing-pages-explanation is honest
+ *  ("we tried 10 but reached 7") rather than silent. */
+function FailedPagesNote({ pagesFailed }: { pagesFailed: FailedPage[] }) {
+  return (
+    <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
+      <p className="font-medium text-amber-800 dark:text-amber-200/90">
+        {pagesFailed.length} {pagesFailed.length === 1 ? "page could" : "pages could"} not be crawled
+      </p>
+      <ul className="mt-1.5 space-y-0.5 text-amber-900/80 dark:text-amber-200/70">
+        {pagesFailed.map((f) => (
+          <li key={f.path} className="flex flex-wrap items-baseline gap-2">
+            <code className="font-mono text-[11px]">{f.path}</code>
+            <span className="text-[11px] opacity-80">- {FAILED_REASON_LABEL[f.reason]}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+const FAILED_REASON_LABEL: Record<FailedPage["reason"], string> = {
+  "4xx": "returned a 4xx (page may have moved or required auth)",
+  "5xx": "returned a 5xx (server error)",
+  "no-content": "returned an empty response",
+  timeout: "did not respond in time",
+};
 
 /** Inline severity histogram pills - one per non-zero bucket. */
 function SeverityHistogram({ h }: { h: ReturnType<typeof pageSeverityHistogram> }) {

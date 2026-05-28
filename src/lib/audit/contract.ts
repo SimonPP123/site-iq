@@ -88,6 +88,16 @@ export const strictAuditResultSchema = z
     pages: z.array(z.object({ path: z.string().min(1).max(250) }).passthrough()).optional(),
     pagesWithIssues: z.number().int().min(0).optional(),
     pagesExcluded: z.number().int().min(0).optional(),
+    // Phase 2E: URLs Firecrawl tried but couldn't turn into a usable page. The reason is a closed
+    // enum so the UI can render a precise sentence ("4xx", "5xx", "no content", "timeout").
+    pagesFailed: z
+      .array(
+        z.object({
+          path: z.string().min(1).max(250),
+          reason: z.enum(["4xx", "5xx", "no-content", "timeout"]),
+        }),
+      )
+      .optional(),
   })
   .passthrough()
   .superRefine((r, ctx) => {

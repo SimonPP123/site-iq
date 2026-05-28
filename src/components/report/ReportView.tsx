@@ -151,22 +151,57 @@ export function ReportView({
     }
   }
 
-  // Live-update the report row itself (status flips queued -> done/error mid-run). If the Realtime
-  // socket errors or drops, fall back to the staleness hint instead of silently freezing.
+  // Live-update the report row itself. Treat the Realtime UPDATE as a NOTIFICATION ("something
+  // changed"), NOT as the authoritative payload: the `result` jsonb now carries a pages list,
+  // failing-page reasons, and an executive summary, so the row can run into Realtime's payload caps
+  // (postgres_changes truncates / drops events when a row exceeds the configured size) - a silent
+  // freeze on big audits exactly when the user is most invested. Pattern:
+  //   - apply status/score/error from the small projection in the payload (always present)
+  //   - on a terminal status (done/error), REST-refetch the full row to get the authoritative
+  //     `result` blob - the source of truth for everything the UI needs to render
+  //   - on socket failure, surface staleness rather than silently freezing
   useEffect(() => {
     if (report.status === "done" || report.status === "error") return;
     const supabase = createClient();
+    let cancelled = false;
     const channel = supabase
       .channel(`reports:${report.id}`)
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "reports", filter: `id=eq.${report.id}` },
-        (payload) => setReport((r) => ({ ...r, ...normalizeReport(payload.new as Report) })),
+        async (payload) => {
+          // Slim projection of the payload - only the small columns we trust on the Realtime channel.
+          const lite = payload.new as Pick<Report, "id" | "status" | "score_overall" | "error">;
+          if (cancelled) return;
+          if (lite.status === "done" || lite.status === "error") {
+            // Authoritative refetch. We CANNOT trust payload.new.result here - it may be truncated
+            // (large jsonb hitting Realtime caps) or arrive on a separate UPDATE that the WAL slot
+            // delivered partially. REST always gives us the committed row.
+            const { data, error } = await supabase
+              .from("reports")
+              .select("*")
+              .eq("id", report.id)
+              .single();
+            if (cancelled) return;
+            if (error || !data) {
+              // Refetch failed; apply the status projection so the spinner stops and the user sees
+              // the terminal state, but flag staleness so the "Refresh" hint shows.
+              setReport((r) => ({ ...r, status: lite.status, score_overall: lite.score_overall, error: lite.error }));
+              setStale(true);
+              return;
+            }
+            setReport(normalizeReport(data as Report));
+          } else {
+            // Intermediate transitions (e.g. queued -> running). No `result` to read yet; just
+            // propagate the status so the step list / banner stays in sync.
+            setReport((r) => ({ ...r, status: lite.status, score_overall: lite.score_overall ?? r.score_overall, error: lite.error ?? r.error }));
+          }
+        },
       )
       .subscribe((status) => {
         if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") setStale(true);
       });
-    return () => { void supabase.removeChannel(channel); };
+    return () => { cancelled = true; void supabase.removeChannel(channel); };
   }, [report.id, report.status]);
 
   // Defense-in-depth: never spin forever. If no terminal status arrives within a few minutes (a
@@ -376,12 +411,14 @@ export function ReportView({
               </p>
             ) : null}
 
-            {/* Phase 2C: "Pages audited" - lists which URLs were sampled (collapsed-by-default per
-                multi-agent UX review). Renders nothing on old reports without a `pages` field. */}
+            {/* Phase 2C + 2E: "Pages audited" - lists which URLs were sampled and which ones
+                Firecrawl couldn't reach (collapsed-by-default per multi-agent UX review). Renders
+                nothing on old reports without a `pages` field. */}
             <CrawledPagesSection
               pages={result.pages}
               pagesWithIssues={result.pagesWithIssues}
               pagesExcluded={result.pagesExcluded}
+              pagesFailed={result.pagesFailed}
               dimensions={result.dimensions}
             />
 
