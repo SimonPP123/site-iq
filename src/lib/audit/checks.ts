@@ -44,10 +44,15 @@ const text = (p: CrawledPage) =>
 const words = (s: string) => s.split(/\s+/).filter(Boolean).length;
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 
-/** Cross-page uniqueness: fraction of non-empty values that occur exactly once (1 if fewer than 2). */
-const uniqRatio = (vals: string[]): number => {
+/** Cross-page uniqueness: fraction of NON-EMPTY values that occur exactly once. Returns null (N/A)
+ *  when there are fewer than 2 non-empty values - uniqueness is not assessable, and crucially an
+ *  all-EMPTY input (a site with no titles / no meta descriptions) must NOT score a false 1.0 "all
+ *  unique" PASS. The ABSENCE is already penalized by S1 (title) / S2 (description); routing S15/S16
+ *  through the nullable cn() so they renormalize out avoids a self-contradictory green "unique meta:
+ *  passed on every page" next to a red "meta description: failed" for the same missing tags. */
+const uniqRatio = (vals: string[]): number | null => {
   const v = vals.map((x) => x.trim().toLowerCase()).filter(Boolean);
-  if (v.length < 2) return 1;
+  if (v.length < 2) return null;
   const counts: Record<string, number> = {};
   for (const x of v) counts[x] = (counts[x] ?? 0) + 1;
   return v.filter((x) => counts[x] === 1).length / v.length;
@@ -372,9 +377,9 @@ export function runAudit(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {})
       }, 0) / n), 2),
     cn("S14", "XML sitemap present", "seo", 5, "medium",
       aux.sitemapFound === undefined ? null : aux.sitemapFound ? 1 : 0, 2),
-    c("S15", "Unique page titles", "seo", 8, "high",
+    cn("S15", "Unique page titles", "seo", 8, "high",
       uniqRatio(sample.map((p) => meta(p).title ?? "")), 2),
-    c("S16", "Unique meta descriptions", "seo", 5, "medium",
+    cn("S16", "Unique meta descriptions", "seo", 5, "medium",
       uniqRatio(sample.map((p) => meta(p).description ?? "")), 2),
     cn("S17", "Sampled pages return OK (no 4xx/5xx or soft-404)", "seo", 9, "high",
       // A sampled page is "broken" if it returned a 4xx/5xx status OR it returned 200 but is a soft-404
@@ -388,7 +393,11 @@ export function runAudit(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {})
         const title = (meta(p).title ?? "").toLowerCase();
         const h1 = (html(p).match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] ?? "").replace(/<[^>]+>/g, " ").toLowerCase();
         const nf = /\b(?:404|not found|page not found|page (?:does ?n'?t|cannot be) found|no longer (?:exists|available))\b/;
-        if ((nf.test(title) || nf.test(h1)) && words(text(p)) < 150) return { kind: "soft_404" };
+        // Real soft-404: the not-found phrase appears AND the page is near-empty (Firecrawl's
+        // main-content extraction strips nav/footer, so a genuine stub yields very few words).
+        // Threshold lowered 150 -> 50 so a legitimate thin ARTICLE whose TOPIC is errors (e.g. a
+        // 120-word "How to fix a 404" help note) is not mislabeled as a broken page.
+        if ((nf.test(title) || nf.test(h1)) && words(text(p)) < 50) return { kind: "soft_404" };
         return null;
       }), 1),
     c("S18", "Logical heading hierarchy", "seo", 6, "medium",
@@ -430,7 +439,13 @@ export function runAudit(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {})
         const self = meta(p).sourceURL ?? rootUrl;
         const origin = (self.match(/^https?:\/\/[^/]+/i)?.[0] ?? "");
         let canon = m[1].trim();
-        if (canon.startsWith("/")) canon = origin + canon;
+        // Resolve relative canonicals. A PROTOCOL-RELATIVE canonical ("//host/path") is a valid,
+        // absolute reference still emitted by older CMS/CDN templates - it must become
+        // "https://host/path", NOT origin + "//host/path" (which would mangle into a bogus
+        // cross-page mismatch and raise a false "silent de-indexing" alarm on a correct site).
+        // Order matters: test "//" before the single-"/" root-relative case.
+        if (canon.startsWith("//")) canon = "https:" + canon;
+        else if (canon.startsWith("/")) canon = origin + canon;
         const norm = (u: string) =>
           u.replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/[#?].*$/, "").replace(/\/+$/, "").toLowerCase();
         if (norm(canon) === norm(self)) return null;
@@ -547,9 +562,15 @@ export function runAudit(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {})
       // citations are scored separately by G15 so the two signals don't double-count.)
       covR((p) => {
         const m = md(p);
+        // Count GENUINE statistics, not bare unit-suffixed numbers. The old pattern matched lone
+        // single-letter magnitudes ("5m" = 5 metres/minutes, "3x") as stats, inflating the GEO
+        // score. Now: percentages and currency are unconditional (unambiguous); magnitude words
+        // require >=2 digits (so "10k", "1.5m" count but "5m"/"3k" do not); "N in M" ratios stay;
+        // the ambiguous bare "x" is dropped (a real ratio is caught by the "N in M" form).
         const stats =
-          (m.match(/\d[\d.,]*\s*(?:%|‰|percent|bn|m|k|million|billion|thousand|x)(?![a-z])/gi) ?? []).length +
+          (m.match(/\d[\d.,]*\s*(?:%|‰|percent)\b/gi) ?? []).length +
           (m.match(/[€$£¥]\s?\d[\d.,]*/g) ?? []).length +
+          (m.match(/\b\d{2,}[\d.,]*\s*(?:k|m|bn|million|billion|thousand)(?![a-z])/gi) ?? []).length +
           (m.match(/\b\d+\s*(?:in|of|out of)\s*\d+\b/gi) ?? []).length;
         return stats >= 3 ? null : { kind: "wrong_count", what: "concrete statistics (%, currency, ratios)", actual: stats, expected: 3 };
       }), 4),

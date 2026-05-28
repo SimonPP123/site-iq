@@ -93,7 +93,10 @@ describe("runChecks - well-built page", () => {
     expect(r.capped).toBe(false);
   });
   it("passes the expanded 2026 checks", () => {
-    expect(ratio(checks, "S15")).toBe(1); // unique titles
+    // S15 (cross-page title uniqueness) is N/A on a single-page sample - uniqueness is not assessable
+    // with one page, so it renormalizes out rather than scoring a misleading 1.0. (Multi-page
+    // uniqueness is covered in the dedicated S15/S16 tests below.)
+    expect(ratio(checks, "S15")).toBeNull();
     expect(ratio(checks, "G11")).toBe(1); // typed Organization schema
     expect(ratio(checks, "G14")).toBe(1); // lists + table
     expect(ratio(checks, "G15")).toBe(1); // authoritative outbound citation (Wikipedia)
