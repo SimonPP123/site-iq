@@ -10,7 +10,40 @@ import {
   validateRedirect,
   sanitizeErrorMessage,
   getClientIp,
+  isSameOriginRequest,
 } from './security';
+
+describe('isSameOriginRequest', () => {
+  const make = (headers: Record<string, string>, url = 'https://siteiq.monkata.ai/api/audit') =>
+    new Request(url, { method: 'POST', headers });
+
+  it('allows Sec-Fetch-Site: same-origin', () => {
+    expect(isSameOriginRequest(make({ 'sec-fetch-site': 'same-origin' }))).toBe(true);
+  });
+  it('allows Sec-Fetch-Site: none (direct navigation / typed URL)', () => {
+    expect(isSameOriginRequest(make({ 'sec-fetch-site': 'none' }))).toBe(true);
+  });
+  it('rejects Sec-Fetch-Site: cross-site', () => {
+    expect(isSameOriginRequest(make({ 'sec-fetch-site': 'cross-site' }))).toBe(false);
+  });
+  it('rejects Sec-Fetch-Site: same-site (different subdomain)', () => {
+    expect(isSameOriginRequest(make({ 'sec-fetch-site': 'same-site' }))).toBe(false);
+  });
+  it('falls back to Origin host match when Sec-Fetch-Site is absent', () => {
+    expect(
+      isSameOriginRequest(make({ origin: 'https://siteiq.monkata.ai', host: 'siteiq.monkata.ai' })),
+    ).toBe(true);
+    expect(
+      isSameOriginRequest(make({ origin: 'https://evil.example', host: 'siteiq.monkata.ai' })),
+    ).toBe(false);
+  });
+  it('rejects a malformed Origin', () => {
+    expect(isSameOriginRequest(make({ origin: 'not-a-url', host: 'siteiq.monkata.ai' }))).toBe(false);
+  });
+  it('allows when neither header is present (non-browser client; Lax cookie already gates browsers)', () => {
+    expect(isSameOriginRequest(make({}))).toBe(true);
+  });
+});
 
 describe('validateRedirect', () => {
   describe('allowed redirects', () => {

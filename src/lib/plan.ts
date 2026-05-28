@@ -6,6 +6,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  * (maxPagesPerAudit is enforced inside the n8n workflow, listed here for documentation.)
  */
 export const FREE_PLAN = {
+  // KEEP IN SYNC with the hard server-side ceiling (v_ceiling) in consume_audit_credit()
+  // (migration 0021): the DB clamps the effective cap to this value so a caller can never raise it.
   auditsPerMonth: 3,
   chatMessagesPerAudit: 5,
   historyDays: 7,

@@ -50,6 +50,24 @@ const envSchema = z.object({
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${key} is required in production` });
     }
   }
+  // The cost circuit-breaker and observability must NOT be able to silently vanish in production.
+  // Both are schema-optional (so preview/local builds pass), but a prod deploy that drops them would
+  // otherwise turn the global audit cap into a no-op (unbounded Firecrawl/OpenAI bill under an
+  // account-farm) and Sentry into a silent no-op (blind production). Fail the prod boot instead.
+  if (!val.GLOBAL_DAILY_AUDIT_CAP) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["GLOBAL_DAILY_AUDIT_CAP"],
+      message: "GLOBAL_DAILY_AUDIT_CAP is required in production (the daily cost ceiling must not silently disable)",
+    });
+  }
+  if (!val.NEXT_PUBLIC_SENTRY_DSN) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["NEXT_PUBLIC_SENTRY_DSN"],
+      message: "NEXT_PUBLIC_SENTRY_DSN is required in production (error reporting must not silently disable)",
+    });
+  }
 });
 
 // Validate environment variables

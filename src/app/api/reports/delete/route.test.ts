@@ -7,7 +7,7 @@ vi.mock("@/lib/supabase/server", () => ({
   createClient: vi.fn(async () => ({ auth: { getClaims: h.getClaims }, from: h.from })),
 }));
 vi.mock("@/lib/rate-limit", () => ({ rateLimit: h.rateLimit, getRateLimitHeaders: () => ({}) }));
-vi.mock("@/lib/security", () => ({ sanitizeErrorMessage: (_e: unknown, f: string) => f }));
+vi.mock("@/lib/security", () => ({ sanitizeErrorMessage: (_e: unknown, f: string) => f, isSameOriginRequest: () => true }));
 
 import { POST } from "./route";
 

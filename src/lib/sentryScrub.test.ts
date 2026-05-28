@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { scrubAuditPaths, scrubBreadcrumb } from "./sentryScrub";
+import { scrubAuditPaths, scrubBreadcrumb, redactUrlPaths } from "./sentryScrub";
 import type { Event, Breadcrumb } from "@sentry/nextjs";
 
 /**
@@ -126,5 +126,39 @@ describe("scrubBreadcrumb", () => {
     const breadcrumb: Breadcrumb = { category: "navigation", message: "click /about" };
     const out = scrubBreadcrumb(breadcrumb);
     expect(out).toEqual(breadcrumb);
+  });
+});
+
+describe("redactUrlPaths (free-text message/exception scrub)", () => {
+  it("strips the path + query of a full URL, keeping scheme+host", () => {
+    expect(redactUrlPaths("fetch failed for https://victim.example/customer/42?token=abc")).toBe(
+      "fetch failed for https://victim.example/[redacted]",
+    );
+  });
+  it("keeps a bare origin (no path) intact", () => {
+    expect(redactUrlPaths("ECONNREFUSED https://victim.example")).toBe("ECONNREFUSED https://victim.example");
+  });
+  it("redacts multiple URLs in one string", () => {
+    expect(redactUrlPaths("a http://a.test/x/y and https://b.test/z")).toBe(
+      "a http://a.test/[redacted] and https://b.test/[redacted]",
+    );
+  });
+  it("leaves non-URL text untouched", () => {
+    expect(redactUrlPaths("plain error, no url here")).toBe("plain error, no url here");
+  });
+});
+
+describe("scrubAuditPaths - message + exception value pass", () => {
+  it("redacts a crawled URL path embedded in event.message", () => {
+    const event: Event = { message: "DNS lookup failed for https://acme.example/admin/users?id=7" };
+    const out = scrubAuditPaths(event);
+    expect(out.message).toBe("DNS lookup failed for https://acme.example/[redacted]");
+  });
+  it("redacts a crawled URL path embedded in exception values", () => {
+    const event: Event = {
+      exception: { values: [{ type: "FetchError", value: "failed: https://acme.example/checkout/cart?sku=9" }] },
+    };
+    const out = scrubAuditPaths(event);
+    expect(out.exception?.values?.[0]?.value).toBe("failed: https://acme.example/[redacted]");
   });
 });

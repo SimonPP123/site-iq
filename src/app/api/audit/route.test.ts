@@ -7,6 +7,7 @@ const h = vi.hoisted(() => ({
   rpc: vi.fn(),
   from: vi.fn(),
   serviceFrom: vi.fn(),
+  serviceRpc: vi.fn(),
   rateLimit: vi.fn(),
   peekRateLimit: vi.fn(),
   normalizeDomain: vi.fn(),
@@ -18,7 +19,7 @@ const h = vi.hoisted(() => ({
 vi.mock("@/lib/supabase/server", () => ({
   createClient: vi.fn(async () => ({ auth: { getClaims: h.getClaims }, rpc: h.rpc, from: h.from })),
 }));
-vi.mock("@/lib/supabase/service", () => ({ createServiceClient: () => ({ from: h.serviceFrom }) }));
+vi.mock("@/lib/supabase/service", () => ({ createServiceClient: () => ({ from: h.serviceFrom, rpc: h.serviceRpc }) }));
 vi.mock("@/lib/rate-limit", () => ({ rateLimit: h.rateLimit, peekRateLimit: h.peekRateLimit, getRateLimitHeaders: () => ({}) }));
 vi.mock("@/lib/env", () => ({ env: h.env }));
 vi.mock("@/lib/domain", () => ({ normalizeDomain: h.normalizeDomain }));
@@ -26,6 +27,7 @@ vi.mock("@/lib/ssrf", () => ({ isPrivateIp: h.isPrivateIp }));
 vi.mock("@/lib/security", () => ({
   getClientIp: () => "1.2.3.4",
   sanitizeErrorMessage: (_e: unknown, fallback: string) => fallback,
+  isSameOriginRequest: () => true,
 }));
 vi.mock("@/lib/plan", () => ({ FREE_PLAN: { auditsPerMonth: 3, chatMessagesPerAudit: 5 } }));
 vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn() }));
@@ -63,6 +65,7 @@ beforeEach(() => {
   const single = vi.fn().mockResolvedValue({ data: { id: "report-1" }, error: null });
   h.from.mockReturnValue({ insert: vi.fn(() => ({ select: vi.fn(() => ({ single })) })) });
   h.serviceFrom.mockReturnValue({ update: vi.fn(() => ({ eq: vi.fn().mockResolvedValue({ error: null }) })) });
+  h.serviceRpc.mockResolvedValue({ error: null });
   vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 202 })));
   process.env.N8N_AUDIT_WEBHOOK_URL = "https://n8n.example/webhook";
   process.env.SIS_WEBHOOK_SECRET = "x".repeat(16);
@@ -148,7 +151,11 @@ describe("POST /api/audit", () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500 })));
     const res = await POST(req({ domain: "example.com" }));
     expect(res.status).toBe(502);
-    expect(h.rateLimit).not.toHaveBeenCalledWith("global:audits", 100, 86_400_000);
+    // Precise matcher: production ALWAYS calls the global consume with 4 args (trailing failClosed).
+    // A 3-arg not.toHaveBeenCalledWith is satisfied by any 4-arg call and so can never catch the
+    // regression it exists for. Assert against the exact 4-arg shape, and that the consume count is 0.
+    expect(h.rateLimit).not.toHaveBeenCalledWith("global:audits", 100, 86_400_000, true);
+    expect(h.rateLimit.mock.calls.filter((c) => c[0] === "global:audits").length).toBe(0);
   });
 
   it("returns 429 when the monthly free quota is exhausted (-1)", async () => {
@@ -172,5 +179,20 @@ describe("POST /api/audit", () => {
     const res = await POST(req({ domain: "example.com" }));
     expect(res.status).toBe(502);
     expect(update).toHaveBeenCalledWith({ status: "error", error: expect.any(String) });
+  });
+
+  it("refunds the consumed credit when the report insert fails (no silent charge)", async () => {
+    // consume_audit_credit ran BEFORE the insert; if the insert fails there is no report row for the
+    // status->error refund trigger to fire on, so the route must refund directly via service-role.
+    // This compensating transaction was previously untested - a drift in the RPC name / period key
+    // would silently eat one of the user's 3 monthly free credits.
+    const single = vi.fn().mockResolvedValue({ data: null, error: { message: "insert boom" } });
+    h.from.mockReturnValue({ insert: vi.fn(() => ({ select: vi.fn(() => ({ single })) })) });
+    const res = await POST(req({ domain: "example.com" }));
+    expect(res.status).toBe(500);
+    expect(h.serviceRpc).toHaveBeenCalledWith(
+      "refund_audit_credit",
+      expect.objectContaining({ p_user: "user-1", p_period: expect.stringMatching(/^\d{4}-\d{2}$/) }),
+    );
   });
 });

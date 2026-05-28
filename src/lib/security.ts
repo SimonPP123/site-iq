@@ -40,3 +40,34 @@ export function getClientIp(headers: Headers): string {
 
     return "unknown";
 }
+
+/**
+ * Same-origin assertion for state-changing, cookie-authenticated routes - defense-in-depth CSRF
+ * protection that does not rely solely on the implicit @supabase/ssr SameSite=Lax cookie default.
+ *
+ * Returns true when the request is safe to process:
+ *  - `Sec-Fetch-Site` (sent by all modern browsers): allow `same-origin` and `none` (a direct
+ *    navigation / typed URL), reject `cross-site` and `same-site` (a different subdomain).
+ *  - else `Origin`: must match the request host.
+ *  - else (neither header, e.g. a server-to-server or old non-browser client): allow - SameSite=Lax
+ *    already blocks the cross-site cookie-bearing browser POST, so this is purely additive.
+ *
+ * Cheap, synchronous, no body read - call it first in every mutating route (audit/chat/delete).
+ */
+export function isSameOriginRequest(req: Request): boolean {
+    const secFetchSite = req.headers.get("sec-fetch-site");
+    if (secFetchSite) {
+        return secFetchSite === "same-origin" || secFetchSite === "none";
+    }
+    const origin = req.headers.get("origin");
+    if (origin) {
+        try {
+            const originHost = new URL(origin).host;
+            const reqHost = req.headers.get("host") ?? new URL(req.url).host;
+            return originHost === reqHost;
+        } catch {
+            return false; // malformed Origin -> reject
+        }
+    }
+    return true; // no Origin/Sec-Fetch-Site (non-browser client) - Lax cookie already gates browsers
+}

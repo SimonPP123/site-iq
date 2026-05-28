@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { sanitizeErrorMessage } from "@/lib/security";
+import { sanitizeErrorMessage, isSameOriginRequest } from "@/lib/security";
 import { rateLimit, getRateLimitHeaders } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -17,6 +17,9 @@ const bodySchema = z.object({
  * report then cascades to audit_steps + chat_messages.
  */
 export async function POST(req: Request) {
+  if (!isSameOriginRequest(req)) {
+    return NextResponse.json({ error: "Cross-origin request rejected" }, { status: 403 });
+  }
   const parsed = bodySchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: "A non-empty list of report ids is required" }, { status: 400 });
