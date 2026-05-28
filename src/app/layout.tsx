@@ -38,6 +38,10 @@ export const metadata: Metadata = {
     },
     alternates: { canonical: "/" },
     robots: { index: true, follow: true },
+    // Google Search Console ownership verification (issued 2026-05-28). Next.js' `verification.google`
+    // emits <meta name="google-site-verification" content="..."> in <head> on every route, including the
+    // root URL Search Console checks. Safe to leave in place permanently per Google's docs.
+    verification: { google: "I7t_CI-d87V2_ISKN-i6okyiEK_uOtYGpSB87lNSCQg" },
 };
 
 // Mobile browser chrome colour per theme + a hint that native UI (form controls, scrollbars,
