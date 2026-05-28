@@ -184,6 +184,46 @@ describe("contract.strictAuditResultSchema - mirror invariant", () => {
     }
   });
 
+  it("rejects a path containing an RTL override (U+202E) - defense vs visual spoofing", () => {
+    // U+202E is RIGHT-TO-LEFT OVERRIDE; an attacker site could redirect through a URL containing
+    // this to render `/admin` in the report while the real path is something benign (or vice versa
+    // - render a benign path while the real one is /admin). The Phase 2A regex strips it on the
+    // n8n side but the contract is defense-in-depth at the persistence boundary.
+    const r = strictAuditResultSchema.safeParse({
+      ...skel,
+      pagesFailed: [{ path: "/about‮‮nimda/", reason: "4xx" }],
+    });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues[0]?.message).toMatch(/control or directional-formatting/i);
+    }
+  });
+
+  it("rejects a path containing ASCII control characters (DEL)", () => {
+    const r = strictAuditResultSchema.safeParse({
+      ...skel,
+      pages: [{ path: "/safehidden" }],
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects a path containing a zero-width space (U+200B)", () => {
+    const r = strictAuditResultSchema.safeParse({
+      ...skel,
+      pages: [{ path: "/legit​spoof" }],
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("accepts a clean path (no rejected characters)", () => {
+    const r = strictAuditResultSchema.safeParse({
+      ...skel,
+      pages: [{ path: "/about" }, { path: "/blog/cold-brew-guide" }],
+      pagesWithIssues: 0,
+    });
+    expect(r.success).toBe(true);
+  });
+
   it("accepts a valid pagesFailed list with structured reasons (Phase 2E)", () => {
     const r = strictAuditResultSchema.safeParse({
       ...skel,

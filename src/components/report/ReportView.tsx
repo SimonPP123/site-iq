@@ -160,6 +160,13 @@ export function ReportView({
   //   - on a terminal status (done/error), REST-refetch the full row to get the authoritative
   //     `result` blob - the source of truth for everything the UI needs to render
   //   - on socket failure, surface staleness rather than silently freezing
+  // Sequence guard for the Realtime->REST race. Two terminal-status payloads arriving in quick
+  // succession (e.g. n8n writes status=done then an error-handler trigger flips to status=error
+  // 200ms later) fire two concurrent REST refetches; whichever's `await` resolves LAST wins via
+  // setReport. Without a monotonic counter, that order is undefined and the user can see a stale
+  // status win. The ref survives across handler invocations so each new event invalidates any
+  // in-flight refetch from an older event. Pair with `cancelled` (unmount guard).
+  const seqRef = useRef(0);
   useEffect(() => {
     if (report.status === "done" || report.status === "error") return;
     const supabase = createClient();
@@ -173,6 +180,7 @@ export function ReportView({
           // Slim projection of the payload - only the small columns we trust on the Realtime channel.
           const lite = payload.new as Pick<Report, "id" | "status" | "score_overall" | "error">;
           if (cancelled) return;
+          const mySeq = ++seqRef.current;
           if (lite.status === "done" || lite.status === "error") {
             // Authoritative refetch. We CANNOT trust payload.new.result here - it may be truncated
             // (large jsonb hitting Realtime caps) or arrive on a separate UPDATE that the WAL slot
@@ -182,11 +190,14 @@ export function ReportView({
               .select("*")
               .eq("id", report.id)
               .single();
-            if (cancelled) return;
+            // Guard: cancelled OR a newer payload arrived while we were awaiting (mySeq is stale).
+            // Without this, a later "error" payload's refetch could be clobbered by an earlier
+            // "done" payload's refetch that resolved last.
+            if (cancelled || mySeq !== seqRef.current) return;
             if (error || !data) {
               // Refetch failed; apply the status projection so the spinner stops and the user sees
               // the terminal state, but flag staleness so the "Refresh" hint shows.
-              setReport((r) => ({ ...r, status: lite.status, score_overall: lite.score_overall, error: lite.error }));
+              setReport((r) => ({ ...r, status: lite.status, score_overall: lite.score_overall ?? r.score_overall, error: lite.error ?? r.error }));
               setStale(true);
               return;
             }

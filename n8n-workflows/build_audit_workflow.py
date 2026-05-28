@@ -221,6 +221,17 @@ for (const p of pages) successPaths.add(pathOf(mt(p).sourceURL || ''));
 const pagesFailed = [];
 const failedSeen = new Set();
 const PAGE_FAILED_CAP = 20; // hard cap so a pathological batch can't bloat the jsonb
+// Build the set of ALL paths Firecrawl returned something for, regardless of whether the page
+// was usable. Critical for redirect detection: if /about was submitted and Firecrawl redirected
+// to /about-us, the returned item's sourceURL is /about-us, so successPaths has /about-us but
+// not /about. Without tracking allReturnedPaths we'd false-positive-label /about as "timeout"
+// on every HTTPS redirect / trailing-slash redirect (i.e. virtually every site).
+const allReturnedPaths = new Set();
+for (const it of items) {
+  const raw = (it.json && (it.json.data || it.json)) || {};
+  const url = raw && raw.metadata && raw.metadata.sourceURL;
+  if (url) allReturnedPaths.add(pathOf(url));
+}
 // First pass: items that Firecrawl returned but we couldn't score (no content or bad status).
 for (const it of items) {
   const raw = (it.json && (it.json.data || it.json)) || {};
@@ -239,12 +250,17 @@ for (const it of items) {
   if (pagesFailed.length >= PAGE_FAILED_CAP) break;
 }
 // Second pass: URLs we submitted that never came back at all (Firecrawl-side timeout / silent drop).
-for (const u of submittedUrls) {
-  if (pagesFailed.length >= PAGE_FAILED_CAP) break;
-  const path = pathOf(u);
-  if (successPaths.has(path) || failedSeen.has(path)) continue;
-  pagesFailed.push({ path, reason: 'timeout' });
-  failedSeen.add(path);
+// Conservative: only emit a 'timeout' if items.length < submittedUrls.length (i.e. SOMETHING
+// actually went missing) AND the submitted URL's path isn't in either successPaths OR
+// allReturnedPaths. The second clause catches redirects (the path moved but the URL was reached).
+if (items.length < submittedUrls.length) {
+  for (const u of submittedUrls) {
+    if (pagesFailed.length >= PAGE_FAILED_CAP) break;
+    const path = pathOf(u);
+    if (successPaths.has(path) || allReturnedPaths.has(path) || failedSeen.has(path)) continue;
+    pagesFailed.push({ path, reason: 'timeout' });
+    failedSeen.add(path);
+  }
 }
 // Per-page coverage. covR's diagnostic returns null (= pass) or a structured FailureReason object
 // (= fail with reason). Wrapped in try/catch so a single broken page never aborts the whole audit -

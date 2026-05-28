@@ -54,6 +54,45 @@ export const auditTriggerSchema = z.object({
 });
 
 /**
+ * Path-shape constraint applied to every per-page URL persisted into AuditResult: rejects ASCII
+ * control chars (\x00-\x1F, \x7F), Unicode directional-formatting overrides (U+200E/F, U+202A-E,
+ * U+2066-9), zero-width chars (U+200B-D, U+FEFF) and word-joiner (U+2060). The producer (n8n's
+ * `pathOf`) already strips \x00-\x1F\x7F (Phase 2A), but a malicious crawl target could redirect
+ * through a URL containing an RTL override (U+202E) that would render `/admin` in the report when
+ * the actual path is something benign - or vice versa, fool the user into thinking they audited
+ * their admin area. Defense-in-depth: bounce these at the validation boundary so neither n8n drift
+ * nor a server-supplied redirect chain can plant them in the persisted result jsonb.
+ */
+// Reject ASCII control (0x00-0x1F), DEL (0x7F), zero-width / direction marks (U+200B-U+200F),
+// bidi overrides (U+202A-U+202E), word-joiner + isolates (U+2060-U+2069), BOM (U+FEFF). Built via
+// RegExp constructor + String.fromCharCode so the source is unambiguous (no invisible characters in
+// the literal regex - those break grep and code-review tools).
+const UNSAFE_PATH_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x00, 0x1f],
+  [0x7f, 0x7f],
+  [0x200b, 0x200f],
+  [0x202a, 0x202e],
+  [0x2060, 0x2069],
+  [0xfeff, 0xfeff],
+];
+const UNSAFE_PATH_RE = new RegExp(
+  "[" +
+    UNSAFE_PATH_RANGES.map(([a, b]) => {
+      const lo = "\\u" + a.toString(16).padStart(4, "0");
+      const hi = "\\u" + b.toString(16).padStart(4, "0");
+      return a === b ? lo : lo + "-" + hi;
+    }).join("") +
+    "]",
+);
+const safePathSchema = z
+  .string()
+  .min(1)
+  .max(250)
+  .refine((s) => !UNSAFE_PATH_RE.test(s), {
+    message: "path contains control or directional-formatting characters",
+  });
+
+/**
  * Stricter schema for the contract test: asserts the engine's own output shape (overall/grade/
  * capped/dimensions/actionPlan) does not drift from what the app + n8n port expect. Permissive on
  * extra fields and on the inner check/action objects so it tracks the envelope, not every detail.
@@ -85,7 +124,7 @@ export const strictAuditResultSchema = z
     actionPlan: z.array(
       z.object({ checkId: z.string(), finding: z.string(), severity: z.string() }).passthrough(),
     ),
-    pages: z.array(z.object({ path: z.string().min(1).max(250) }).passthrough()).optional(),
+    pages: z.array(z.object({ path: safePathSchema }).passthrough()).optional(),
     pagesWithIssues: z.number().int().min(0).optional(),
     pagesExcluded: z.number().int().min(0).optional(),
     // Phase 2E: URLs Firecrawl tried but couldn't turn into a usable page. The reason is a closed
@@ -93,7 +132,7 @@ export const strictAuditResultSchema = z
     pagesFailed: z
       .array(
         z.object({
-          path: z.string().min(1).max(250),
+          path: safePathSchema,
           reason: z.enum(["4xx", "5xx", "no-content", "timeout"]),
         }),
       )
