@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { sanitizeErrorMessage, getClientIp, isSameOriginRequest } from "@/lib/security";
 import { env } from "@/lib/env";
 import { rateLimit, getRateLimitHeaders } from "@/lib/rate-limit";
-import { FREE_PLAN, chatMessagesForReport } from "@/lib/plan";
+import { FREE_PLAN } from "@/lib/plan";
 import * as Sentry from "@sentry/nextjs";
 import { parseAuditResult } from "@/lib/audit/contract";
 
@@ -75,8 +75,7 @@ export async function POST(req: Request) {
     );
   }
 
-  // Ownership gate: RLS only returns this row if it belongs to the caller. A done report also
-  // guarantees its pages have been embedded, so the chat corpus exists.
+  // Ownership gate: RLS only returns this row if it belongs to the caller.
   const { data: report } = await supabase
     .from("reports")
     .select("id, status, result")
@@ -89,15 +88,49 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "The report is not ready to chat yet" }, { status: 409 });
   }
 
-  // Free-plan cap: a limited number of chat messages per audit (all users are Free today).
-  const usedChat = await chatMessagesForReport(supabase, reportId);
-  if (usedChat >= FREE_PLAN.chatMessagesPerAudit) {
+  // Corpus guard: a report can be 'done' (its score is valid) while its page embeddings failed or
+  // were never written - the embed step in n8n runs AFTER the status flips and is non-blocking, so
+  // an embed failure leaves status='done' with zero documents. Chat is a RAG over those embeddings;
+  // with no corpus it would "answer" blind from only the scorecard. Tell the user the page content
+  // is unavailable instead of pretending to answer from the pages. (RLS scopes the count to the
+  // caller's own report; text-compare policy from migration 0020.)
+  const { count: docCount } = await supabase
+    .from("documents")
+    .select("id", { count: "exact", head: true })
+    .filter("metadata->>report_id", "eq", reportId);
+  if (!docCount || docCount === 0) {
     return NextResponse.json(
-      {
-        error: `You have used all ${FREE_PLAN.chatMessagesPerAudit} chat messages for this audit on the free plan.`,
-      },
+      { error: "Chat for this report isn't available yet - its page content could not be indexed. Try re-running the audit." },
+      { status: 409 },
+    );
+  }
+
+  // Free-plan per-audit message cap, consumed ATOMICALLY. consume_chat_message locks the report row,
+  // counts existing user messages, and inserts THIS user message in one transaction, returning the
+  // new message id (>0), -1 over cap, or 0 if the caller does not own the report. This closes the
+  // read-then-write overspend where N concurrent requests all passed an under-cap read before any
+  // insert landed and all fired the paid LLM call. A failed LLM turn below still counts the message
+  // (it was sent) - acceptable for cost control, and chat_messages has no user DELETE policy to
+  // refund through anyway.
+  const { data: reserved, error: capErr } = await supabase.rpc("consume_chat_message", {
+    p_report_id: reportId,
+    p_content: message,
+    p_max: FREE_PLAN.chatMessagesPerAudit,
+  });
+  if (capErr) {
+    console.error("[/api/chat] consume_chat_message failed", capErr);
+    return NextResponse.json({ error: "Could not verify your chat usage" }, { status: 500 });
+  }
+  const reservedId = Number(reserved);
+  if (reservedId === -1) {
+    return NextResponse.json(
+      { error: `You have used all ${FREE_PLAN.chatMessagesPerAudit} chat messages for this audit on the free plan.` },
       { status: 429 },
     );
+  }
+  if (!reservedId || reservedId <= 0) {
+    // 0 = not the owner (shouldn't happen - ownership gated above - but never proceed without a slot).
+    return NextResponse.json({ error: "Report not found" }, { status: 404 });
   }
 
   // Compact scorecard so the agent can answer "why did I get a B / what should I fix?" from the real
@@ -128,14 +161,12 @@ export async function POST(req: Request) {
     const answer = data?.answer?.trim();
     if (!answer) throw new Error("The assistant returned an empty answer");
 
-    // Persist the turn so the conversation continues across visits (RLS: caller owns the report).
+    // The USER message was already persisted atomically by consume_chat_message (the cap reservation);
+    // persist only the assistant reply now so the conversation continues across visits.
     const { error: persistErr } = await supabase
       .from("chat_messages")
-      .insert([
-        { report_id: reportId, role: "user", content: message },
-        { report_id: reportId, role: "assistant", content: answer },
-      ]);
-    if (persistErr) console.error("[/api/chat] persist failed", persistErr);
+      .insert([{ report_id: reportId, role: "assistant", content: answer }]);
+    if (persistErr) console.error("[/api/chat] assistant persist failed", persistErr);
 
     return NextResponse.json({ answer });
   } catch (err) {
