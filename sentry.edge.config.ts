@@ -1,12 +1,13 @@
 import * as Sentry from "@sentry/nextjs";
 import type { Event, EventHint } from "@sentry/nextjs";
+import { scrubAuditPaths, scrubBreadcrumb } from "@/lib/sentryScrub";
 
 /**
  * Strip PII from edge/middleware Sentry events before they leave the process. The middleware layer
  * (auth callback, redirect handling, route gating) sees user-submitted domains, `next`/`redirect`
  * params, and cookie fragments - none of which belong in error reports. Mirrors sentry.server.config.ts.
  */
-function scrubEdgeEvent<T extends Event>(event: T, _hint: EventHint): T {
+function scrubEdgeEvent<T extends Event>(event: T, hint: EventHint): T {
     if (event.request) {
         delete event.request.cookies;
         delete event.request.data;
@@ -21,7 +22,9 @@ function scrubEdgeEvent<T extends Event>(event: T, _hint: EventHint): T {
         }
         delete (event.request as Record<string, unknown>).query_string;
     }
-    return event;
+    // Edge runtime also handles the n8n trigger webhook callbacks - the result jsonb shouldn't
+    // ever reach an edge exception, but defense-in-depth across all 3 runtimes.
+    return scrubAuditPaths(event, hint);
 }
 
 Sentry.init({
@@ -31,4 +34,5 @@ Sentry.init({
     debug: false,
     beforeSend: scrubEdgeEvent,
     beforeSendTransaction: scrubEdgeEvent,
+    beforeBreadcrumb: scrubBreadcrumb,
 });

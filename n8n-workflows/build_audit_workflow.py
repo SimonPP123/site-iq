@@ -283,7 +283,14 @@ const covR = diag => {
   for (const p of pages) {
     const path = pathOf(mt(p).sourceURL || meta.rootUrl || '');
     let reason = null;
-    try { reason = diag(p); } catch (e) { pass++; continue; }
+    // Fail-open + LOG: a thrown diagnostic is treated as PASS (same posture as the TS engine in
+    // src/lib/audit/checks.ts:covR), but the error is now logged to the n8n execution console.
+    // Previously the catch was silent - a malformed Firecrawl payload that throws on property
+    // access would inflate scores with zero diagnostic trail. Logging the error name + path lets
+    // the n8n execution log surface the pattern so we can investigate (and potentially flip to
+    // fail-closed if it becomes common). The diag's catch is per-page so one bad page never
+    // aborts the whole audit.
+    try { reason = diag(p); } catch (e) { console.error('[covR] diag threw for', path, String(e && e.message || e)); pass++; continue; }
     if (reason === null) pass++;
     else { failing.push({ path, reason: sanitizeReason(reason) }); pagesWithIssuesSet.add(path); }
   }

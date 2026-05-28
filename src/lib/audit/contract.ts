@@ -24,6 +24,19 @@ const minimalAuditResultSchema = z
  * Parse + validate a `result` value (a JSON string OR an already-parsed object) into an AuditResult.
  * Returns null when the payload is missing the shape the UI depends on, so callers can degrade
  * gracefully (show "result unavailable") instead of crashing.
+ *
+ * Two-tier validation strategy (Phase 2B+ production hardening):
+ *   1. Try the STRICT schema (mirror invariant `failing.path ⊆ pages.path`, closed
+ *      `pagesFailed.reason` enum, control-char-free path lengths). On success, the value passes
+ *      every contract assertion the test suite uses.
+ *   2. On strict failure, fall back to the MINIMAL schema (just the keys the UI maps over) and
+ *      log to Sentry so the workflow drift surfaces in production telemetry instead of silently
+ *      under-counting pages, dropping orphan failing entries, or rendering an "info"-defaulted
+ *      severity that should have been "critical". The renderer continues with degraded confidence;
+ *      the engineer fixes the workflow upstream the next morning.
+ *
+ * The degrade path is critical: if strict-only, ANY workflow drift would blank the entire report
+ * (the user thinks the audit broke). Two-tier keeps the UX promise while still emitting the alert.
  */
 export function parseAuditResult(raw: unknown): AuditResult | null {
   if (raw === null || raw === undefined) return null;
@@ -36,14 +49,38 @@ export function parseAuditResult(raw: unknown): AuditResult | null {
       return null;
     }
   }
-  const parsed = minimalAuditResultSchema.safeParse(obj);
-  if (!parsed.success) {
-    console.error("[contract] audit result failed validation:", parsed.error.issues[0]?.message);
+  // Try strict first. On a permissive payload (no `pages`, old report) the strict schema still
+  // accepts via the .optional() fields - it only adds rules WHEN those fields are present.
+  const strict = strictAuditResultSchema.safeParse(obj);
+  if (strict.success) return strict.data as unknown as AuditResult;
+  // Strict failed. Log the first issue (don't spam) so production telemetry sees the drift.
+  // Lazy Sentry import keeps the contract module free of a hard @sentry/nextjs dep at parse time
+  // (parseAuditResult runs server-side, client-side, and during tests - Sentry's only available
+  // when the runtime opted in by initializing the SDK).
+  const firstIssue = strict.error.issues[0];
+  const issueMsg = firstIssue?.message ?? "unknown strict-schema violation";
+  const issuePath = firstIssue?.path?.join(".") ?? "";
+  console.warn(`[contract] strict validation failed at ${issuePath}: ${issueMsg}`);
+  if (typeof window === "undefined" && process.env.NEXT_PUBLIC_SENTRY_DSN) {
+    // Server-side: Sentry is available via @sentry/nextjs server config.
+    void import("@sentry/nextjs")
+      .then((Sentry) => {
+        Sentry.captureMessage("[contract] strict audit result validation failed", {
+          level: "warning",
+          extra: { issue: issueMsg, issuePath },
+        });
+      })
+      .catch(() => {
+        // Sentry not initialized in this runtime - the console.warn above is the only signal.
+      });
+  }
+  // Degrade to minimal: accept the payload if it at least has the keys the UI maps over.
+  const minimal = minimalAuditResultSchema.safeParse(obj);
+  if (!minimal.success) {
+    console.error("[contract] audit result failed validation:", minimal.error.issues[0]?.message);
     return null;
   }
-  // The invariants the UI needs are validated; the value carries the full (passthrough) object,
-  // including extras (summary, pagesSampled, ...). The cast is now AFTER validation, not before.
-  return parsed.data as unknown as AuditResult;
+  return minimal.data as unknown as AuditResult;
 }
 
 /** The app -> n8n audit trigger payload. Documents the outbound contract; used by the contract test. */

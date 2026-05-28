@@ -33,12 +33,12 @@ export type PageMatrix = Map<string, PageFailure[]>;
 
 /** Slim per-check shape the matrix needs - subset of CheckResult so callers may pass the UI-side
  *  projection (Check) that ReportView uses, instead of the full engine-side CheckResult. `severity`
- *  is optional because the projection sometimes omits it; we default to "info" so the histogram
- *  still works on legacy data. */
+ *  is REQUIRED (matches the tightened ReportView Check projection) so the histogram never has to
+ *  silently default to "info" and mask a producer bug. */
 export interface PageMatrixCheck {
   id: string;
   label: string;
-  severity?: Severity;
+  severity: Severity;
   evidence?: CheckEvidence;
 }
 
@@ -75,7 +75,7 @@ export function buildPageMatrix(
           checkId: c.id,
           checkLabel: c.label,
           dimensionId: d.id,                // parent dimension id (slim Check omits `dimension`)
-          severity: c.severity ?? "info",   // default to lowest bucket if missing
+          severity: c.severity,             // required - no silent default; producer guarantees it
           reason: fp.reason,
         });
       }

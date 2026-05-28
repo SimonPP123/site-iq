@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { runChecks } from "./checks";
-import type { CheckResult, CrawledPage } from "./types";
+import { runAudit, runChecks } from "./checks";
+import type { AuditedPage, CheckResult, CrawledPage, FailedPage } from "./types";
 
 /**
  * Tests for the per-check "evidence" (where we checked / which pages failed). Two parts:
@@ -184,11 +184,26 @@ describe("n8n <-> TS evidence parity (executes the ported CHECKS_JS)", () => {
 
   // Execute the port's CHECKS_JS with a $() shim feeding the same pages + headers the TS engine gets.
   // Nodes returned as `absent` make the port's try/catch treat them as not-fetched (fail-open), exactly
-  // like an undefined AuditAux field on the TS side.
-  const runPort = (pages: CrawledPage[], headers?: Record<string, string>): CheckResult[] => {
+  // like an undefined AuditAux field on the TS side. Returns the FULL emitted json so the parity
+  // assertions can cover not just .checks but also the Phase-2B page rollups (pages,
+  // pagesWithIssues, pagesExcluded) and the Phase-2E pagesFailed transparency list.
+  interface PortJson {
+    checks: CheckResult[];
+    pages?: AuditedPage[];
+    pagesWithIssues?: number;
+    pagesExcluded?: number;
+    pagesFailed?: FailedPage[];
+  }
+  const runPort = (
+    pages: CrawledPage[],
+    headers?: Record<string, string>,
+    opts: { submittedUrlsOverride?: string[]; pagesExcluded?: number } = {},
+  ): PortJson => {
     const present = (json: unknown, all?: unknown[]) => ({ first: () => ({ json }), all: () => all ?? [] });
     const absent = { first: () => undefined, all: () => [] as unknown[] };
-    const urls = pages.map((p) => p.metadata?.sourceURL).filter(Boolean);
+    const urls = opts.submittedUrlsOverride ?? (pages.map((p) => p.metadata?.sourceURL).filter(Boolean) as string[]);
+    const pickUrlsPayload: Record<string, unknown> = { urls };
+    if (typeof opts.pagesExcluded === "number") pickUrlsPayload.pagesExcluded = opts.pagesExcluded;
     const $ = (name: string) => {
       switch (name) {
         case "Normalize":
@@ -196,7 +211,7 @@ describe("n8n <-> TS evidence parity (executes the ported CHECKS_JS)", () => {
         case "Scraped pages":
           return present(undefined, pages.map((p) => ({ json: p })));
         case "Pick URLs":
-          return present({ urls });
+          return present(pickUrlsPayload);
         case "Fetch headers":
           return headers ? present({ headers, body: "" }) : absent;
         default:
@@ -205,8 +220,8 @@ describe("n8n <-> TS evidence parity (executes the ported CHECKS_JS)", () => {
     };
     const fn = new Function("$", runChecksCode) as (
       d: typeof $,
-    ) => Array<{ json: { checks: CheckResult[] } }>;
-    return fn($)[0].json.checks;
+    ) => Array<{ json: PortJson }>;
+    return fn($)[0].json;
   };
 
   it("produces byte-identical ratios + evidence for a mixed fixture", () => {
@@ -223,10 +238,59 @@ describe("n8n <-> TS evidence parity (executes the ported CHECKS_JS)", () => {
       "x-content-type-options": "nosniff",
     };
     const ts = runChecks(pages, "https://ex.com", { headersFetched: true, headers });
-    const port = runPort(pages, headers);
+    const port = runPort(pages, headers).checks;
 
     expect(port.length).toBe(ts.length);
     const project = (c: CheckResult) => [c.id, { ratio: c.ratio, evidence: c.evidence }] as const;
     expect(Object.fromEntries(port.map(project))).toEqual(Object.fromEntries(ts.map(project)));
+  });
+
+  it("page rollup parity (Phase 2B): pages list + pagesWithIssues match between TS and port", () => {
+    // Three pages all with weak titles -> several checks fail per page. The rollup numbers must be
+    // identical: same de-dupe semantics, same accumulator-before-truncation semantics. Catches a
+    // future port drift where (e.g.) the n8n side stops feeding pagesWithIssuesSet inside covR.
+    const pages = [page("/", { title: "Hi" }), page("/menu", { title: "Yo" }), page("/about", { title: "x" })];
+    const ts = runAudit(pages, "https://ex.com");
+    const port = runPort(pages);
+    expect(port.pages).toEqual(ts.pages);
+    expect(port.pagesWithIssues).toBe(ts.pagesWithIssues);
+  });
+
+  it("pagesExcluded passthrough (n8n PICK_JS -> CHECKS_JS rollup)", () => {
+    // The SENSITIVE_PATH_RE filter lives in PICK_JS, not CHECKS_JS - the count is just passed
+    // through. Asserts CHECKS_JS reads it from $('Pick URLs').first().json.pagesExcluded without
+    // dropping or mutating it.
+    const port = runPort([page("/", { title: "Hi" })], undefined, { pagesExcluded: 3 });
+    expect(port.pagesExcluded).toBe(3);
+  });
+
+  it("pagesFailed shape (Phase 2E): n8n emits 'timeout' for submitted URLs Firecrawl never returned", () => {
+    // Submit 3 URLs but only return 1 from "Scraped pages" -> the other 2 are unattributable
+    // timeouts (no returned items for them, so the redirect heuristic correctly classifies them as
+    // 'timeout'). TS engine has no equivalent (Firecrawl batch is n8n-only) so this is one-sided
+    // verification of the n8n-emitted shape, not a cross-engine equality.
+    const present = page("/", { title: "Acme - Real-time Analytics Platform" });
+    const port = runPort([present], undefined, {
+      submittedUrlsOverride: ["https://ex.com/", "https://ex.com/about", "https://ex.com/contact"],
+    });
+    expect(Array.isArray(port.pagesFailed)).toBe(true);
+    const paths = (port.pagesFailed ?? []).map((f) => f.path).sort();
+    expect(paths).toEqual(["/about", "/contact"]);
+    for (const fp of port.pagesFailed ?? []) {
+      expect(fp.reason).toBe("timeout");
+    }
+  });
+
+  it("pagesFailed redirect guard: a submitted URL whose path appears among returned items is NOT flagged", () => {
+    // Submitted /about, but Firecrawl returned /about-us (redirect). Without the allReturnedPaths
+    // guard from commit b4fdfa2, /about would be falsely emitted as 'timeout'. This test pins the
+    // guard so a future "simplification" cannot re-introduce the redirect-false-positive bug.
+    const home = page("/", { title: "Acme - Real-time Analytics Platform" });
+    const redirected = page("/about-us", { title: "About Us" });
+    const port = runPort([home, redirected], undefined, {
+      submittedUrlsOverride: ["https://ex.com/", "https://ex.com/about"],
+    });
+    // items.length (2) === submittedUrls.length (2), so pass 2 is skipped entirely.
+    expect(port.pagesFailed ?? []).toEqual([]);
   });
 });
