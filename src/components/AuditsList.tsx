@@ -5,6 +5,15 @@ import Link from "next/link";
 import Image from "next/image";
 
 const GRADE_HEX: Record<string, string> = { A: "#10b981", B: "#34d399", C: "#f59e0b", D: "#fb923c", F: "#ef4444" };
+// Theme-aware TEXT colour for the score pill - the saturated GRADE_HEX fail WCAG AA as text on the
+// light theme, so use darkened -700 on light + -400 on dark. Border/bg keep the low-alpha hex.
+const GRADE_TEXT: Record<string, string> = {
+  A: "text-emerald-700 dark:text-emerald-400",
+  B: "text-emerald-700 dark:text-emerald-400",
+  C: "text-amber-700 dark:text-amber-400",
+  D: "text-orange-700 dark:text-orange-400",
+  F: "text-red-700 dark:text-red-400",
+};
 const gradeFor = (s: number | null) =>
   s === null ? "?" : s >= 90 ? "A" : s >= 80 ? "B" : s >= 70 ? "C" : s >= 60 ? "D" : "F";
 
@@ -157,8 +166,8 @@ export function AuditsList({ initial }: { initial: AuditRow[] }) {
                 </div>
                 {r.status === "done" ? (
                   <span
-                    className="shrink-0 rounded-full border px-3 py-1 text-sm font-medium tabular-nums"
-                    style={{ borderColor: `${c}55`, backgroundColor: `${c}1a`, color: c }}
+                    className={`shrink-0 rounded-full border px-3 py-1 text-sm font-medium tabular-nums ${GRADE_TEXT[g] ?? "text-zinc-700 dark:text-zinc-300"}`}
+                    style={{ borderColor: `${c}55`, backgroundColor: `${c}1a` }}
                   >
                     {r.score_overall} · {g}
                   </span>

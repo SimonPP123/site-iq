@@ -95,14 +95,25 @@ const SEV_HEX: Record<string, string> = {
   critical: "#f87171", high: "#fb923c", medium: "#fbbf24", low: "#52525b", info: "#52525b",
 };
 const GRADE_HEX: Record<string, string> = { A: "#10b981", B: "#34d399", C: "#f59e0b", D: "#fb923c", F: "#ef4444" };
+// Theme-aware TEXT colour for the grade label. The saturated GRADE_HEX were tuned for the dark card
+// (pass AA there) but fail WCAG AA badly as text on the light theme (A=2.31, B=1.80 ... :1). Use the
+// darkened -700 shade on light + the original -400 on dark (the pattern the rest of the app uses).
+// Static strings so Tailwind keeps them; border/bg stay the low-alpha hex (fine on both themes).
+const GRADE_TEXT: Record<string, string> = {
+  A: "text-emerald-700 dark:text-emerald-400",
+  B: "text-emerald-700 dark:text-emerald-400",
+  C: "text-amber-700 dark:text-amber-400",
+  D: "text-orange-700 dark:text-orange-400",
+  F: "text-red-700 dark:text-red-400",
+};
 
 /** Coloured score/grade pill (matches the gauge's semantic bands). */
 function GradePill({ grade, score }: { grade: string; score: number }) {
   const c = GRADE_HEX[grade] ?? "#9a9aa7";
   return (
     <span
-      className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm font-medium tabular-nums"
-      style={{ borderColor: `${c}55`, backgroundColor: `${c}1a`, color: c }}
+      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm font-medium tabular-nums ${GRADE_TEXT[grade] ?? "text-zinc-700 dark:text-zinc-300"}`}
+      style={{ borderColor: `${c}55`, backgroundColor: `${c}1a` }}
     >
       {score}/100 <span className="opacity-50">·</span> Grade {grade}
     </span>

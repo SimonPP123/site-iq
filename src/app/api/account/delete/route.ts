@@ -42,7 +42,16 @@ export async function POST(req: Request) {
     const { data: reports } = await supabase.from("reports").select("id");
     const ids = (reports ?? []).map((r) => (r as { id: string }).id);
     if (ids.length > 0) {
-      await admin.from("documents").delete().filter("metadata->>report_id", "in", `(${ids.join(",")})`);
+      // Check the purge error BEFORE the irreversible auth-user cascade: if the embeddings delete
+      // failed, the reports (and thus the report_id link) must NOT be removed yet, or those
+      // documents become unreclaimable orphans of a user who exercised right-to-erasure. Throwing
+      // here lands in the catch -> 500, and the user can retry with the embeddings still purgeable.
+      // (Mirrors reports/delete, which already throws on its documents-delete error.)
+      const { error: docErr } = await admin
+        .from("documents")
+        .delete()
+        .filter("metadata->>report_id", "in", `(${ids.join(",")})`);
+      if (docErr) throw docErr;
     }
     // Delete the auth user -> cascades reports (-> audit_steps + chat_messages) and audit_usage.
     const { error } = await admin.auth.admin.deleteUser(userId);

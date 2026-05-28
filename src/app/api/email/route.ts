@@ -3,7 +3,7 @@ import { Resend } from "resend";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { rateLimit, getRateLimitHeaders } from "@/lib/rate-limit";
-import { getClientIp, sanitizeErrorMessage } from "@/lib/security";
+import { getClientIp, sanitizeErrorMessage, isSameOriginRequest } from "@/lib/security";
 import { isAdminEmail } from "@/lib/admin";
 
 // Lazy initialization to avoid build-time errors
@@ -23,6 +23,12 @@ const emailSchema = z.object({
 
 export async function POST(request: NextRequest) {
     try {
+        // Defense-in-depth CSRF: this is a cookie-authenticated mutating route (admin arbitrary-HTML
+        // email), so gate it on same-origin like the other four mutating routes - don't rely solely
+        // on the implicit SameSite=Lax cookie default.
+        if (!isSameOriginRequest(request)) {
+            return NextResponse.json({ error: "Cross-origin request rejected" }, { status: 403 });
+        }
         // Authentication check - validate the JWT locally via getClaims (never getSession for trust).
         const supabase = await createClient();
         const { data: claims } = await supabase.auth.getClaims();

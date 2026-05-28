@@ -5,7 +5,7 @@ const h = vi.hoisted(() => ({ getClaims: vi.fn(), rateLimit: vi.fn(), isAdminEma
 
 vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn(async () => ({ auth: { getClaims: h.getClaims } })) }));
 vi.mock("@/lib/rate-limit", () => ({ rateLimit: h.rateLimit, getRateLimitHeaders: () => ({}) }));
-vi.mock("@/lib/security", () => ({ getClientIp: () => "1.2.3.4", sanitizeErrorMessage: (_e: unknown, f: string) => f }));
+vi.mock("@/lib/security", () => ({ getClientIp: () => "1.2.3.4", sanitizeErrorMessage: (_e: unknown, f: string) => f, isSameOriginRequest: () => true }));
 vi.mock("@/lib/admin", () => ({ isAdminEmail: h.isAdminEmail }));
 vi.mock("resend", () => ({ Resend: class { emails = { send: h.send }; } }));
 
