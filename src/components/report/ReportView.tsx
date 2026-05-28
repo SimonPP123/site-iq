@@ -15,6 +15,7 @@ import { SiteHeader } from "@/components/SiteHeader";
 import { CHECK_INFO } from "@/lib/audit/checkInfo";
 import { WhatWeChecked } from "./WhatWeChecked";
 import { ContactCTA } from "./ContactCTA";
+import { CrawledPagesSection } from "./CrawledPagesSection";
 import type { CheckResult, DimensionResult, AuditResult, FailingPage, FailureReason } from "@/lib/audit/types";
 
 /** Defensive normalizer: reports persisted BEFORE the failingDetails migration have `failing: string[]`;
@@ -48,7 +49,10 @@ function renderReason(reason: FailureReason | undefined): string {
  * pages failed). CheckResult carries additional scoring fields (weight, severity, dimension, etc.)
  * that are not needed in the report view layer - we project down to this subset.
  */
-type Check = Pick<CheckResult, "id" | "label" | "ratio" | "evidence">;
+// `severity` is `Partial`-ed (i.e. optional) because old reports persisted before the severity-on-Check
+// migration lack it, and the demo fixture in /sample also leaves it implicit. The renderer falls back
+// to "info" when missing (lowest bucket), so a missing severity never crashes the histogram.
+type Check = Pick<CheckResult, "id" | "label" | "ratio" | "evidence"> & Partial<Pick<CheckResult, "severity">>;
 
 /**
  * UI-facing dimension: same as DimensionResult but with checks narrowed to the
@@ -371,6 +375,15 @@ export function ReportView({
                 tag manager or Google Tag Assistant.
               </p>
             ) : null}
+
+            {/* Phase 2C: "Pages audited" - lists which URLs were sampled (collapsed-by-default per
+                multi-agent UX review). Renders nothing on old reports without a `pages` field. */}
+            <CrawledPagesSection
+              pages={result.pages}
+              pagesWithIssues={result.pagesWithIssues}
+              pagesExcluded={result.pagesExcluded}
+              dimensions={result.dimensions}
+            />
 
             {result.summary?.markdown && (
               <section className="surface mt-6 p-6">
