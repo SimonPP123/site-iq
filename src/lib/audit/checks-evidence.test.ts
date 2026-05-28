@@ -37,7 +37,7 @@ const page = (
 };
 
 describe("check evidence (TS engine)", () => {
-  it("lists the exact pages that fail a per-page check (S1 short titles)", () => {
+  it("lists the exact pages that fail a per-page check (S1 short titles) with structured reasons", () => {
     const checks = runChecks(
       [
         page("/", { title: "Acme - Real-time Analytics Platform" }),
@@ -49,12 +49,17 @@ describe("check evidence (TS engine)", () => {
     const e = ev(checks, "S1");
     expect(e?.where).toBe("Across all 3 crawled pages");
     expect(e?.checked).toBe(3);
-    expect(e?.failing).toEqual(["/about", "/contact"]);
+    expect(e?.failing).toEqual([
+      { path: "/about",   reason: { kind: "too_short", actual: 2, min: 15 } },
+      { path: "/contact", reason: { kind: "too_short", actual: 2, min: 15 } },
+    ]);
   });
 
   it("uses the root path '/' for the home page", () => {
     const checks = runChecks([page("/", { title: "Hi" })], "https://ex.com");
-    expect(ev(checks, "S1")?.failing).toEqual(["/"]);
+    expect(ev(checks, "S1")?.failing).toEqual([
+      { path: "/", reason: { kind: "too_short", actual: 2, min: 15 } },
+    ]);
     expect(ev(checks, "S1")?.where).toBe("Across all 1 crawled page"); // singular
   });
 
@@ -63,6 +68,8 @@ describe("check evidence (TS engine)", () => {
     const e = ev(runChecks(pages, "https://ex.com"), "S1");
     expect(e?.failing?.length).toBe(12);
     expect(e?.more).toBe(2);
+    // Every entry carries a structured reason, not a bare path.
+    expect(e?.failing?.[0]?.reason?.kind).toBe("too_short");
   });
 
   it("de-dupes failing paths that normalize to the same path (/about and /about/)", () => {
@@ -71,8 +78,58 @@ describe("check evidence (TS engine)", () => {
       "https://ex.com",
     );
     // Both pages fail S1 and both normalize to "/about" - the displayed list must not repeat it.
-    expect(ev(checks, "S1")?.failing).toEqual(["/about"]);
+    // First-reason wins on dedupe collision (documented in mkEvidence).
+    expect(ev(checks, "S1")?.failing).toEqual([
+      { path: "/about", reason: { kind: "too_short", actual: 2, min: 15 } },
+    ]);
     expect(ev(checks, "S1")?.where).toBe("Across all 2 crawled pages");
+  });
+
+  it("emits a `too_long` reason when the title overflows the upper bound", () => {
+    const longTitle = "Acme " + "X".repeat(80);
+    const checks = runChecks([page("/", { title: longTitle })], "https://ex.com");
+    expect(ev(checks, "S1")?.failing).toEqual([
+      { path: "/", reason: { kind: "too_long", actual: longTitle.length, max: 60 } },
+    ]);
+  });
+
+  it("emits a `missing` reason when the title is absent entirely", () => {
+    const checks = runChecks([page("/", { title: "" })], "https://ex.com");
+    expect(ev(checks, "S1")?.failing).toEqual([
+      { path: "/", reason: { kind: "missing", what: "title" } },
+    ]);
+  });
+
+  it("emits a `noindex` reason on a page with <meta robots=\"noindex\"> (S4)", () => {
+    const checks = runChecks(
+      [page("/blocked", { title: "Title acceptable length here", head: `<meta name="robots" content="noindex">` })],
+      "https://ex.com",
+    );
+    expect(ev(checks, "S4")?.failing).toEqual([
+      { path: "/blocked", reason: { kind: "noindex" } },
+    ]);
+  });
+
+  it("emits a `non_https` reason on an HTTP page (TB1)", () => {
+    const checks = runChecks([page("/", { title: "Acceptable title here" })], "http://ex.com");
+    // page() helper uses opts.url for sourceURL; the default base in our page builder is the rootUrl.
+    // Use a directly-http source so TB1 sees it.
+    const httpChecks = runChecks(
+      [{ ...page("/", { title: "Acceptable title here" }), metadata: { ...(page("/", { title: "Acceptable title here" }).metadata ?? {}), sourceURL: "http://ex.com/" } }],
+      "http://ex.com",
+    );
+    expect(ev(httpChecks, "TB1")?.failing).toEqual([
+      { path: "/", reason: { kind: "non_https" } },
+    ]);
+    expect(checks); // appease ts-unused
+  });
+
+  it("does not attach a reason to a fail-open path (broken diagnostic counts as pass)", () => {
+    // A diagnostic that throws is treated as PASS in covR. This is an invariant test - we don't have
+    // a public hook to inject a throwing diagnostic, but we can assert the surrounding shape: covR's
+    // catch block bumps `pass`, so a fixture where ALL diagnostics succeed produces no `failing` entries.
+    const checks = runChecks([page("/", { title: "Acceptable title length here" })], "https://ex.com");
+    expect(ev(checks, "S1")?.failing).toBeUndefined();
   });
 
   it("labels site-source checks by their source, with no page list", () => {

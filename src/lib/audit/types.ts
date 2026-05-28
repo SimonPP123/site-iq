@@ -34,6 +34,46 @@ export type DimensionId = "seo" | "tracking" | "geo" | "tech";
  * be computed during the n8n run (the crawled pages carry metadata.sourceURL) and persisted in the
  * result, because the page URLs are not otherwise stored.
  */
+/**
+ * Why a specific sampled page failed a check. Each kind is paired with the minimal data the UI needs
+ * to render a precise sentence (and, later, filter / group / translate). Structured rather than a free
+ * string so the same shape can be safely persisted, parity-tested across the TS engine and the n8n
+ * port, and never leaks raw page content (titles, descriptions, response headers) that could carry
+ * XSS or prompt-injection payloads. `other` is a transitional escape hatch for migrations.
+ */
+export type FailureReason =
+  /** Content was found but too short for the rule's range (S1 title, S2 description, S10 content depth, ...). */
+  | { kind: "too_short"; actual: number; min: number }
+  /** Content was found but too long for the rule's range (S1 title, S2 description). */
+  | { kind: "too_long"; actual: number; max: number }
+  /** The required element is absent from the page entirely (S3 canonical, S12 OG, G1 JSON-LD, ...). */
+  | { kind: "missing"; what: string }
+  /** A robots/googlebot meta or X-Robots-Tag header sets `noindex` (S4). */
+  | { kind: "noindex" }
+  /** Page returned a non-OK HTTP status (S17). */
+  | { kind: "http_status"; code: number }
+  /** Page returned 200 but the body looks like a "not found" page (S17). */
+  | { kind: "soft_404" }
+  /** Page was fetched over plain HTTP, not HTTPS (TB1). */
+  | { kind: "non_https" }
+  /** Found N occurrences of something when 1 was expected (S5 multiple H1, S12 missing tag, ...). */
+  | { kind: "wrong_count"; what: string; actual: number; expected: number }
+  /** Cross-page mismatch (S23 canonical points elsewhere; S15/S16 duplicate of another page). */
+  | { kind: "mismatch"; what: string; expected: string; actual: string }
+  /** Free-text escape hatch for checks that have not yet been migrated to a structured kind, OR for
+   *  rare aggregate findings where no single `kind` fits. Length-capped at the persistence layer. */
+  | { kind: "other"; note: string };
+
+/** One sampled page that did not pass a check, with the structured reason it failed. */
+export interface FailingPage {
+  /** Normalized path of the page (query + hash dropped, trailing slash trimmed). */
+  path: string;
+  /** Why this page failed. Structured so the UI can render precisely and i18n later.
+   *  Optional: an `undefined` reason means "the check failed here, no further detail" - kept around
+   *  so unmigrated checks can ship `failing: [{path}]` without reasons. */
+  reason?: FailureReason;
+}
+
 export interface CheckEvidence {
   /**
    * One-line, human-readable label of the source the check examined, e.g.
@@ -41,8 +81,11 @@ export interface CheckEvidence {
    * or "Tag/script detection across all 9 crawled pages plus the GTM container".
    */
   where: string;
-  /** Page paths (e.g. "/about") that did NOT pass - per-page checks only. Capped; see `more`. */
-  failing?: string[];
+  /** Pages that did NOT pass - per-page checks only. De-duped by `path` (first-reason wins on collision);
+   *  capped at 12 entries, with the overflow count in `more`. Each entry carries a structured reason
+   *  (a `FailureReason` discriminated union) for that specific page so the report can show *what* went
+   *  wrong, not just *which* URL was affected. */
+  failing?: FailingPage[];
   /** Number of sampled pages the check examined (per-page checks only). */
   checked?: number;
   /** Failing pages omitted beyond the `failing` cap (so the UI can say "+N more"). */

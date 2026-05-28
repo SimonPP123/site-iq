@@ -1,7 +1,32 @@
 "use client";
 
 import { CHECK_INFO } from "@/lib/audit/checkInfo";
-import type { CheckEvidence } from "@/lib/audit/types";
+import type { CheckEvidence, FailingPage, FailureReason } from "@/lib/audit/types";
+
+/** Defensive normalizer: pre-migration reports stored `failing` as string[]; post-migration store it
+ *  as FailingPage[]. Accept both at render time so historical reports keep rendering correctly. */
+function normFailing(fp: unknown): FailingPage {
+  return typeof fp === "string" ? { path: fp } : (fp as FailingPage);
+}
+
+/** Render a structured `FailureReason` as a short English sentence. Pure helper - no JSX, no HTML;
+ *  the caller wraps it in plain text (React auto-escapes), so even a Cyrillic or emoji-bearing
+ *  page can never inject markup. Length-capped by the engine's sanitizeReason already. */
+function renderReason(reason: FailureReason | undefined): string {
+  if (!reason) return "did not pass";
+  switch (reason.kind) {
+    case "too_short":  return `${reason.actual} chars (too short, min ${reason.min})`;
+    case "too_long":   return `${reason.actual} chars (too long, max ${reason.max})`;
+    case "missing":    return `missing ${reason.what}`;
+    case "noindex":    return "noindex directive set";
+    case "http_status": return `returned HTTP ${reason.code}`;
+    case "soft_404":   return `soft-404 (200 OK but the page reads as 'not found')`;
+    case "non_https":  return "served over HTTP, not HTTPS";
+    case "wrong_count": return `${reason.actual} of ${reason.what} (expected ${reason.expected})`;
+    case "mismatch":   return `${reason.what} mismatch (expected '${reason.expected}', found '${reason.actual}')`;
+    case "other":      return reason.note;
+  }
+}
 
 type Check = { id: string; label: string; ratio: number | null; evidence?: CheckEvidence };
 type Dimension = {
@@ -167,20 +192,27 @@ function CheckRow({ check }: { check: Check }) {
                 <span className="text-muted-foreground">{check.evidence.where}.</span>
               </p>
               {check.evidence.failing && check.evidence.failing.length > 0 && (
-                <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                  <span className="font-medium text-amber-700 dark:text-amber-400">Problem on:</span>
-                  {check.evidence.failing.map((path) => (
-                    <code
-                      key={path}
-                      className="rounded bg-background/60 px-1.5 py-0.5 text-xs text-muted-foreground"
-                    >
-                      {path}
-                    </code>
-                  ))}
+                <div className="space-y-1">
+                  <p className="font-medium text-amber-700 dark:text-amber-400">Problem on:</p>
+                  <ul className="space-y-0.5">
+                    {check.evidence.failing.map((raw) => {
+                      const fp = normFailing(raw);
+                      return (
+                        <li key={fp.path} className="flex flex-wrap items-baseline gap-x-2">
+                          <code className="rounded bg-background/60 px-1.5 py-0.5 text-xs text-muted-foreground">
+                            {fp.path}
+                          </code>
+                          {fp.reason && (
+                            <span className="text-xs text-muted-foreground">{renderReason(fp.reason)}</span>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
                   {check.evidence.more ? (
-                    <span className="text-xs text-muted-foreground">+{check.evidence.more} more</span>
+                    <p className="text-xs text-muted-foreground">+{check.evidence.more} more</p>
                   ) : null}
-                </p>
+                </div>
               )}
             </div>
           )}

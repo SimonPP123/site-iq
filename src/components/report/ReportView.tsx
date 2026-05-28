@@ -15,7 +15,33 @@ import { SiteHeader } from "@/components/SiteHeader";
 import { CHECK_INFO } from "@/lib/audit/checkInfo";
 import { WhatWeChecked } from "./WhatWeChecked";
 import { ContactCTA } from "./ContactCTA";
-import type { CheckResult, DimensionResult, AuditResult } from "@/lib/audit/types";
+import type { CheckResult, DimensionResult, AuditResult, FailingPage, FailureReason } from "@/lib/audit/types";
+
+/** Defensive normalizer: reports persisted BEFORE the failingDetails migration have `failing: string[]`;
+ *  reports persisted AFTER have `failing: Array<{path, reason?}>`. Accept both at render time so old
+ *  audits keep displaying correctly without a one-shot DB migration. */
+function normFailing(fp: unknown): FailingPage {
+  return typeof fp === "string" ? { path: fp } : (fp as FailingPage);
+}
+
+/** Render a structured `FailureReason` as a short English sentence. Same helper as in WhatWeChecked,
+ *  duplicated here to avoid a circular-import / shared-utils file for one small function. Length is
+ *  already capped at persistence (sanitizeReason in checks.ts), so no further trimming needed. */
+function renderReason(reason: FailureReason | undefined): string {
+  if (!reason) return "did not pass";
+  switch (reason.kind) {
+    case "too_short":  return `${reason.actual} chars (too short, min ${reason.min})`;
+    case "too_long":   return `${reason.actual} chars (too long, max ${reason.max})`;
+    case "missing":    return `missing ${reason.what}`;
+    case "noindex":    return "noindex directive set";
+    case "http_status": return `returned HTTP ${reason.code}`;
+    case "soft_404":   return `soft-404 (200 OK but the page reads as 'not found')`;
+    case "non_https":  return "served over HTTP, not HTTPS";
+    case "wrong_count": return `${reason.actual} of ${reason.what} (expected ${reason.expected})`;
+    case "mismatch":   return `${reason.what} mismatch (expected '${reason.expected}', found '${reason.actual}')`;
+    case "other":      return reason.note;
+  }
+}
 
 /**
  * Slim per-check shape the UI needs: id, label, ratio, and the evidence (where we checked / which
@@ -437,13 +463,23 @@ export function ReportView({
                               <div className="space-y-1.5">
                                 <p><span className="font-medium">Where we checked. </span><span className="text-muted-foreground">{ev.where}.</span></p>
                                 {ev.failing && ev.failing.length > 0 && (
-                                  <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                                    <span className="font-medium text-amber-700 dark:text-amber-400">Problem on:</span>
-                                    {ev.failing.map((path) => (
-                                      <code key={path} className="rounded bg-background/60 px-1.5 py-0.5 text-xs text-muted-foreground">{path}</code>
-                                    ))}
-                                    {ev.more ? <span className="text-xs text-muted-foreground">+{ev.more} more</span> : null}
-                                  </p>
+                                  <div className="space-y-1">
+                                    <p className="font-medium text-amber-700 dark:text-amber-400">Problem on:</p>
+                                    <ul className="space-y-0.5">
+                                      {ev.failing.map((raw) => {
+                                        const fp = normFailing(raw);
+                                        return (
+                                          <li key={fp.path} className="flex flex-wrap items-baseline gap-x-2">
+                                            <code className="rounded bg-background/60 px-1.5 py-0.5 text-xs text-muted-foreground">{fp.path}</code>
+                                            {fp.reason && (
+                                              <span className="text-xs text-muted-foreground">{renderReason(fp.reason)}</span>
+                                            )}
+                                          </li>
+                                        );
+                                      })}
+                                    </ul>
+                                    {ev.more ? <p className="text-xs text-muted-foreground">+{ev.more} more</p> : null}
+                                  </div>
                                 )}
                               </div>
                             )}

@@ -12,7 +12,13 @@
  * so both hard-coded and GTM-injected tags are seen. Count-based checks (one H1) use rendered html.
  */
 
-import type { CheckEvidence, CheckResult, CrawledPage } from "./types";
+import type {
+  CheckEvidence,
+  CheckResult,
+  CrawledPage,
+  FailingPage,
+  FailureReason,
+} from "./types";
 
 const rawHtml = (p: CrawledPage) => p.rawHtml ?? "";
 const html = (p: CrawledPage) => p.html ?? p.rawHtml ?? "";
@@ -116,25 +122,78 @@ export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}
     (p) => p && (p.html || p.rawHtml || p.markdown || p.metadata),
   );
   const n = sample.length || 1;
-  // Per-page coverage, now RECORDING which sampled pages failed (for the report's "where / which
-  // pages" evidence). The ratio is unchanged (pass/n), so scores and parity are unaffected; the
-  // failing-page list is purely additive metadata. Checks that pass a raw number (partials, aux,
-  // tracking) instead get a "where" label in the post-pass at the end of this function.
-  type CovEval = { r: number; failing: string[] };
-  const EVID_CAP = 12; // max page paths listed per check; overflow counted in evidence.more
-  const cov = (fn: (p: CrawledPage) => boolean): CovEval => {
-    const failing: string[] = [];
+  // Per-page coverage. The diagnostic returns `null` to mean "this page passes the check" or a
+  // structured `FailureReason` to mean "this page failed, here is why" - so the same pass over the
+  // sample populates both the ratio (pass/n) and the per-URL failure list with reasons. The ratio
+  // semantics are identical to the previous boolean `cov`, so scores and parity stay unchanged; the
+  // failing-page list with reasons is the new evidence the UI renders. Checks that pass a raw number
+  // (partials, aux, tracking) instead get a "where" label in the post-pass at the end of this function.
+  type CovEval = { r: number; failing: FailingPage[] };
+  const EVID_CAP = 12; // max failing pages listed per check; overflow counted in evidence.more
+  const REASON_MAX = 200; // hard cap on the byte size of any `other` note (XSS / jsonb-size guard)
+  const sanitizeReason = (reason: FailureReason): FailureReason => {
+    // Strip any control chars and length-cap free-text fields. Structured kinds are typed and safe
+    // at the type level, so only the `other.note` and `mismatch`/`missing`/`wrong_count` string
+    // fields need defensive scrubbing (they MAY come from user-controlled page content downstream).
+    const scrub = (s: string) => s.replace(/[\x00-\x1f\x7f]/g, "").slice(0, REASON_MAX);
+    switch (reason.kind) {
+      case "other":      return { kind: "other", note: scrub(reason.note) };
+      case "missing":    return { kind: "missing", what: scrub(reason.what) };
+      case "wrong_count": return { kind: "wrong_count", what: scrub(reason.what), actual: reason.actual, expected: reason.expected };
+      case "mismatch":   return { kind: "mismatch", what: scrub(reason.what), expected: scrub(reason.expected), actual: scrub(reason.actual) };
+      default:           return reason; // numeric / no-payload kinds need no scrubbing
+    }
+  };
+  /**
+   * Coverage with reasons. `diag(p)` returns `null` for pass, or a structured `FailureReason` for
+   * fail. Wrapped in try/catch so a single broken page (e.g. malformed Firecrawl payload, exotic
+   * encoding) never aborts the whole audit; a thrown diagnostic is treated as PASS (fail-open) with
+   * a console.error - same posture as the previous boolean cov, which also could not throw because
+   * the boolean tests are defensive. Always prefer this helper over the legacy `cov()`.
+   */
+  const covR = (diag: (p: CrawledPage) => FailureReason | null): CovEval => {
+    const failing: FailingPage[] = [];
     let pass = 0;
     for (const p of sample) {
-      if (fn(p)) pass++;
-      else failing.push(pathOf(meta(p).sourceURL ?? rootUrl));
+      const path = pathOf(meta(p).sourceURL ?? rootUrl);
+      let reason: FailureReason | null = null;
+      try {
+        reason = diag(p);
+      } catch (err) {
+        // Fail-open: a diagnostic that throws is a bug in the rule OR a corrupt page, NOT a check
+        // failure. Counting it as pass keeps a single broken page from tanking a real signal.
+        // Surface it for debugging.
+        // eslint-disable-next-line no-console
+        console.error("[covR] diagnostic threw for", path, err);
+        pass++;
+        continue;
+      }
+      if (reason === null) pass++;
+      else failing.push({ path, reason: sanitizeReason(reason) });
     }
     return { r: clamp01(pass / n), failing };
   };
-  const mkEvidence = (failing: string[], checked: number): CheckEvidence => {
-    // De-dupe: two sampled URLs can normalize to the same path (e.g. "/a" and "/a/"), and pages
-    // missing a sourceURL all collapse to the root path - so the displayed list must be unique.
-    const uniq = [...new Set(failing)];
+  /** Legacy boolean coverage. Returns failing pages with `reason: undefined` - kept so the few
+   *  remaining boolean checks compile without churn. New checks SHOULD use `covR`. */
+  const cov = (fn: (p: CrawledPage) => boolean): CovEval => {
+    const failing: FailingPage[] = [];
+    let pass = 0;
+    for (const p of sample) {
+      if (fn(p)) pass++;
+      else failing.push({ path: pathOf(meta(p).sourceURL ?? rootUrl) });
+    }
+    return { r: clamp01(pass / n), failing };
+  };
+  const mkEvidence = (failing: FailingPage[], checked: number): CheckEvidence => {
+    // De-dupe by path: two sampled URLs can normalize to the same path (e.g. "/a" and "/a/"), and
+    // pages missing a sourceURL all collapse to the root - so the displayed list must be unique by
+    // path. When two entries share a path but disagree on reason, FIRST one wins (deterministic +
+    // matches the existing dedupe order; documented contract).
+    const seen = new Set<string>();
+    const uniq: FailingPage[] = [];
+    for (const fp of failing) {
+      if (!seen.has(fp.path)) { seen.add(fp.path); uniq.push(fp); }
+    }
     const ev: CheckEvidence = {
       where: `Across all ${checked} crawled page${checked === 1 ? "" : "s"}`,
       checked,
@@ -240,21 +299,33 @@ export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}
   const out: CheckResult[] = [
     // SEO
     c("S1", "Title present (15-60 chars)", "seo", 10, "high",
-      cov((p) => { const t = (meta(p).title ?? "").trim(); return t.length >= 15 && t.length <= 60; }), 1),
+      covR((p) => {
+        const t = (meta(p).title ?? "").trim();
+        if (t.length === 0) return { kind: "missing", what: "title" };
+        if (t.length < 15)  return { kind: "too_short", actual: t.length, min: 15 };
+        if (t.length > 60)  return { kind: "too_long",  actual: t.length, max: 60 };
+        return null;
+      }), 1),
     c("S2", "Meta description (70-160 chars)", "seo", 7, "medium",
-      cov((p) => { const d = (meta(p).description ?? "").trim(); return d.length >= 70 && d.length <= 160; }), 1),
+      covR((p) => {
+        const d = (meta(p).description ?? "").trim();
+        if (d.length === 0) return { kind: "missing", what: "meta description" };
+        if (d.length < 70)  return { kind: "too_short", actual: d.length, min: 70 };
+        if (d.length > 160) return { kind: "too_long",  actual: d.length, max: 160 };
+        return null;
+      }), 1),
     c("S3", "Canonical tag present", "seo", 8, "high",
-      cov((p) => /<link[^>]+rel=["']canonical["']/i.test(src(p))), 2),
+      covR((p) => /<link[^>]+rel=["']canonical["']/i.test(src(p)) ? null : { kind: "missing", what: "canonical link tag" }), 2),
     c("S4", "Indexable (no noindex)", "seo", 12, "critical",
       // Matches name="robots" OR name="googlebot", in either attribute order (name-then-content or
       // content-then-name). NOTE: an X-Robots-Tag HTTP-header noindex is not visible to the scrape.
-      cov((p) => !/<meta[^>]+(?:name=["'](?:robots|googlebot)["'][^>]*content=["'][^"']*noindex|content=["'][^"']*noindex[^>]*name=["'](?:robots|googlebot)["'])/i.test(src(p))), 1),
+      covR((p) => /<meta[^>]+(?:name=["'](?:robots|googlebot)["'][^>]*content=["'][^"']*noindex|content=["'][^"']*noindex[^>]*name=["'](?:robots|googlebot)["'])/i.test(src(p)) ? { kind: "noindex" } : null), 1),
     c("S5", "At least one H1", "seo", 7, "medium",
-      cov((p) => (html(p).match(/<h1[\s>]/gi) ?? []).length >= 1), 2),
+      covR((p) => (html(p).match(/<h1[\s>]/gi) ?? []).length >= 1 ? null : { kind: "missing", what: "h1 heading" }), 2),
     c("S10", "Content depth (>=300 words)", "seo", 7, "medium",
-      cov((p) => words(text(p)) >= 300), 4),
+      covR((p) => { const w = words(text(p)); return w >= 300 ? null : { kind: "too_short", actual: w, min: 300 }; }), 4),
     c("S12", "Open Graph tags", "seo", 4, "low",
-      cov((p) => /property=["']og:(?:title|image)["']/i.test(src(p))), 1),
+      covR((p) => /property=["']og:(?:title|image)["']/i.test(src(p)) ? null : { kind: "missing", what: "og:title and og:image" }), 1),
     c("S13", "Image alt coverage", "seo", 3, "low",
       clamp01(sample.reduce((s, p) => {
         const imgs = (html(p).match(/<img[\s>]/gi) ?? []).length;
@@ -269,54 +340,66 @@ export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}
       uniqRatio(sample.map((p) => meta(p).description ?? "")), 2),
     cn("S17", "Sampled pages return OK (no 4xx/5xx or soft-404)", "seo", 9, "high",
       // A sampled page is "broken" if it returned a 4xx/5xx status OR it returned 200 but is a soft-404
-      // (a "not found" title/H1 on a thin page); cov records the broken pages as evidence. NOTE: this
-      // judges only the <=10 sampled pages - Firecrawl drops genuinely-failed URLs from the batch, so it
-      // cannot discover broken internal LINKS (an internal-link HEAD-probe is the roadmap item).
-      cov((p) => {
+      // (a "not found" title/H1 on a thin page); covR records the broken pages WITH the structured
+      // reason. NOTE: this judges only the <=10 sampled pages - Firecrawl drops genuinely-failed URLs
+      // from the batch, so it cannot discover broken internal LINKS (an internal-link HEAD-probe is
+      // the roadmap item).
+      covR((p) => {
         const code = meta(p).statusCode;
-        const httpBroken = code !== undefined && (code < 200 || code >= 400);
+        if (code !== undefined && (code < 200 || code >= 400)) return { kind: "http_status", code };
         const title = (meta(p).title ?? "").toLowerCase();
         const h1 = (html(p).match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] ?? "").replace(/<[^>]+>/g, " ").toLowerCase();
         const nf = /\b(?:404|not found|page not found|page (?:does ?n'?t|cannot be) found|no longer (?:exists|available))\b/;
-        const softNotFound = (nf.test(title) || nf.test(h1)) && words(text(p)) < 150;
-        return !(httpBroken || softNotFound);
+        if ((nf.test(title) || nf.test(h1)) && words(text(p)) < 150) return { kind: "soft_404" };
+        return null;
       }), 1),
     c("S18", "Logical heading hierarchy", "seo", 6, "medium",
-      cov((p) => {
+      covR((p) => {
         const levels = (html(p).match(/<h([1-6])[\s>]/gi) ?? []).map((t) => Number(t.replace(/\D/g, "")));
-        if (levels.length === 0) return false;
-        if (levels.filter((l) => l === 1).length !== 1) return false; // exactly one H1
+        if (levels.length === 0) return { kind: "missing", what: "heading tags" };
+        const h1Count = levels.filter((l) => l === 1).length;
+        if (h1Count !== 1) return { kind: "wrong_count", what: "h1 heading", actual: h1Count, expected: 1 };
         let prev = 0;
-        for (const l of levels) { if (prev && l > prev + 1) return false; prev = l; } // no skipped level
-        return true;
+        for (const l of levels) {
+          if (prev && l > prev + 1) return { kind: "other", note: `heading level h${prev} jumps to h${l} (skipped h${prev + 1})` };
+          prev = l;
+        }
+        return null;
       }), 3),
     cn("S21", "Valid hreflang (multilingual sites)", "seo", 6, "medium",
       sample.some((p) => /rel=["']alternate["'][^>]*hreflang=/i.test(src(p)))
-        ? cov((p) => {
+        ? covR((p) => {
             const tags = src(p).match(/hreflang=["']([^"']+)["']/gi) ?? [];
-            return tags.every((t) => {
+            for (const t of tags) {
               const v = (t.match(/hreflang=["']([^"']+)["']/i)?.[1] ?? "").trim();
               // lang (2-3 letters) + optional script (4 letters, e.g. zh-Hant) + optional region (2 letters)
-              return /^[a-z]{2,3}(-[a-z]{4})?(-[a-z]{2})?$|^x-default$/i.test(v);
-            });
+              if (!/^[a-z]{2,3}(-[a-z]{4})?(-[a-z]{2})?$|^x-default$/i.test(v)) {
+                return { kind: "other", note: `invalid hreflang value '${v.slice(0, 30)}'` };
+              }
+            }
+            return null;
           })
         : null, 4),
     c("S23", "Canonical resolves to this page (no cross-page mismatch)", "seo", 5, "medium",
       // A canonical pointing to a DIFFERENT page tells Google to drop this one in favour of that URL - a
       // silent de-indexing if unintended. Pass when there's no canonical (presence is S3) or it self-
       // references; fail only on a genuine different-path mismatch (trailing slash / query / case ignored).
-      cov((p) => {
+      covR((p) => {
         const m =
           src(p).match(/<link[^>]+rel=["']canonical["'][^>]*href=["']([^"']+)["']/i) ??
           src(p).match(/<link[^>]+href=["']([^"']+)["'][^>]*rel=["']canonical["']/i);
-        if (!m) return true;
+        if (!m) return null;
         const self = meta(p).sourceURL ?? rootUrl;
         const origin = (self.match(/^https?:\/\/[^/]+/i)?.[0] ?? "");
         let canon = m[1].trim();
         if (canon.startsWith("/")) canon = origin + canon;
         const norm = (u: string) =>
           u.replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/[#?].*$/, "").replace(/\/+$/, "").toLowerCase();
-        return norm(canon) === norm(self);
+        if (norm(canon) === norm(self)) return null;
+        // Report the canonical's path only (origin + ?query stripped) so the reason is a clean URL,
+        // never raw HTML or arbitrary attributes. Capped at 80 chars defensively.
+        const canonPath = canon.replace(/^https?:\/\/[^/]+/i, "").replace(/[#?].*$/, "") || "/";
+        return { kind: "mismatch", what: "canonical", expected: pathOf(self), actual: canonPath.slice(0, 80) };
       }), 2),
 
     // Tracking & Analytics - scored by detection confidence (see `det` / `tNA` above). "high", not
@@ -383,7 +466,7 @@ export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}
     c("G1", "Structured data (JSON-LD) present", "geo", 8, "high",
       // Weight 8 (was 12): "any JSON-LD present" overlaps G11 "typed schema entities" (12); G11 is the
       // stronger signal, so G1 is the lighter gate to avoid double-rewarding the same thing.
-      cov((p) => /<script[^>]+type=["']application\/ld\+json["']/i.test(src(p))), 2),
+      covR((p) => /<script[^>]+type=["']application\/ld\+json["']/i.test(src(p)) ? null : { kind: "missing", what: "JSON-LD <script>" }), 2),
     cn("G3", "Server-side rendered content", "geo", 14, "high",
       // Real SSR signal: compare the NO-JS initial HTML (aux.rootHtml - a plain GET of the root, no
       // browser render) to the browser-RENDERED homepage. If the no-JS HTML already holds most of the
@@ -406,31 +489,31 @@ export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}
     c("G4", "Direct-answer opening", "geo", 10, "high",
       // Language-agnostic: a self-contained lead sentence (something an answer engine can lift)
       // appears before the first section heading - not a heading, list, quote, or image line.
-      cov((p) => {
+      covR((p) => {
         for (const raw of md(p).split("\n")) {
           const l = raw.trim();
           if (!l) continue;
-          if (/^#{1,6}\s/.test(l)) return false; // a heading came before any lead paragraph
+          if (/^#{1,6}\s/.test(l)) return { kind: "other", note: "first content line is a heading, not a lead paragraph" };
           if (/^(?:[-*>|!]|\d+\.\s)/.test(l)) continue; // skip list / quote / table / image lines
           const len = l.replace(/[#*_`>[\]()]/g, "").trim().length;
-          if (len >= 60 && len <= 400 && /[.!?。]$/.test(l)) return true; // a real, liftable sentence
-          if (len >= 60) return false;
+          if (len >= 60 && len <= 400 && /[.!?。]$/.test(l)) return null; // pass: a real, liftable sentence
+          if (len >= 60) return { kind: "other", note: "lead paragraph found but it is too long or lacks ending punctuation" };
         }
-        return false;
+        return { kind: "other", note: "no lead paragraph (60-400 chars) before the first heading" };
       }), 3),
     c("G5", "Q&A / FAQ structure", "geo", 8, "medium",
-      cov((p) => /FAQPage|"@type"\s*:\s*"Question"/i.test(src(p)) || /(^|\n)#+[^\n]*\?/.test(md(p)) || /<summary[^>]*>[^<]*\?/i.test(html(p))), 3),
+      covR((p) => /FAQPage|"@type"\s*:\s*"Question"/i.test(src(p)) || /(^|\n)#+[^\n]*\?/.test(md(p)) || /<summary[^>]*>[^<]*\?/i.test(html(p)) ? null : { kind: "missing", what: "Q&A / FAQ structure" }), 3),
     c("G6", "Statistics & data points", "geo", 8, "medium",
       // Concrete numbers make content more citable by AI engines (Princeton GEO). Language-agnostic:
       // percentages, currency, magnitudes (k/m/bn/million), and "N in M" / "Nx" ratios. (Outbound
       // citations are scored separately by G15 so the two signals don't double-count.)
-      cov((p) => {
+      covR((p) => {
         const m = md(p);
         const stats =
           (m.match(/\d[\d.,]*\s*(?:%|‰|percent|bn|m|k|million|billion|thousand|x)(?![a-z])/gi) ?? []).length +
           (m.match(/[€$£¥]\s?\d[\d.,]*/g) ?? []).length +
           (m.match(/\b\d+\s*(?:in|of|out of)\s*\d+\b/gi) ?? []).length;
-        return stats >= 3;
+        return stats >= 3 ? null : { kind: "wrong_count", what: "concrete statistics (%, currency, ratios)", actual: stats, expected: 3 };
       }), 4),
     c("G7", "Freshness signals", "geo", 6, "medium",
       // Recency-scored, not presence-only: parse the declared dateModified/datePublished/<time datetime>
@@ -450,20 +533,21 @@ export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}
         }, 0) / n,
       ), 3),
     c("G8", "Authorship / E-E-A-T", "geo", 6, "medium",
-      cov((p) => /"author"|rel=["']author["']|"Organization"|"sameAs"/i.test(src(p))), 3),
+      covR((p) => /"author"|rel=["']author["']|"Organization"|"sameAs"/i.test(src(p)) ? null : { kind: "missing", what: "author / Organization / sameAs signals" }), 3),
     cn("G9", "AI crawlers not blocked", "geo", 8, "high",
       !aux.robotsFetched ? null : robotsBlocksAiCrawler(aux.robotsTxt ?? "") ? 0 : 1, 2),
     c("G11", "Typed schema entities", "geo", 12, "high",
       // Reward the RIGHT JSON-LD types (not just any JSON-LD): an Organization with a name, an Article
       // with author + date, a Product with offers/rating, or FAQ/HowTo/Breadcrumb/LocalBusiness.
-      cov((p) => {
+      covR((p) => {
         const s = src(p);
-        return (
+        const pass = (
           (/"@type"\s*:\s*"Organization"/i.test(s) && /"(?:name|sameAs|logo)"\s*:/i.test(s)) ||
           (/"@type"\s*:\s*"(?:Article|BlogPosting|NewsArticle)"/i.test(s) && /"author"\s*:/i.test(s) && /"datePublished"\s*:/i.test(s)) ||
           (/"@type"\s*:\s*"Product"/i.test(s) && /"(?:offers|aggregateRating)"\s*:/i.test(s)) ||
           /"@type"\s*:\s*"(?:FAQPage|HowTo|BreadcrumbList|Recipe|Event|LocalBusiness)"/i.test(s)
         );
+        return pass ? null : { kind: "missing", what: "typed schema (Organization / Article / Product / FAQ / HowTo / ...)" };
       }), 3),
     c("G12", "Snippet-eligible (no nosnippet)", "geo", 8, "high",
       // AI Overviews / answer engines can only cite snippet-eligible pages; nosnippet or max-snippet:0
@@ -471,19 +555,20 @@ export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}
       // Per-page <meta robots> nosnippet, OR the root X-Robots-Tag response header (which can carry
       // nosnippet too; we only have the root URL's headers, so that gates all pages). data-nosnippet
       // element attributes remain out of scope.
-      cov((p) => !(/<meta[^>]+name=["']robots["'][^>]*content=["'][^"']*(?:nosnippet|max-snippet:\s*0)/i.test(src(p)) || /nosnippet|max-snippet:\s*0/i.test(hdr("x-robots-tag")))), 1),
+      covR((p) => /<meta[^>]+name=["']robots["'][^>]*content=["'][^"']*(?:nosnippet|max-snippet:\s*0)/i.test(src(p)) || /nosnippet|max-snippet:\s*0/i.test(hdr("x-robots-tag")) ? { kind: "other", note: "nosnippet / max-snippet:0 directive blocks citation" } : null), 1),
     c("G14", "Extractable formatting (lists/tables)", "geo", 6, "medium",
       // Lists and tables are the formats answer engines lift verbatim.
-      cov((p) => {
+      covR((p) => {
         const m = md(p);
         const items = (m.match(/^\s*(?:[-*]\s+|\d+\.\s+)/gm) ?? []).length;
         const rows = (m.match(/^\s*\|.*\|\s*$/gm) ?? []).length;
-        return items >= 3 || rows >= 2 || /<table[\s>]/i.test(html(p));
+        if (items >= 3 || rows >= 2 || /<table[\s>]/i.test(html(p))) return null;
+        return { kind: "missing", what: "extractable lists or tables" };
       }), 2),
     c("G15", "Outbound authoritative citations", "geo", 8, "medium",
       // Citing sources is the single largest measured GEO lift (Princeton). Count external links to
       // authoritative hosts (.gov/.edu/.int, Wikipedia/Wikidata, doi.org, WHO/NIH, europa.eu, etc.).
-      cov((p) => {
+      covR((p) => {
         const self = hostOf(meta(p).sourceURL ?? rootUrl);
         const re = /\]\((https?:\/\/[^)]+)\)/gi;
         let m: RegExpExecArray | null;
@@ -495,7 +580,7 @@ export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}
               /(?:^|\.)(?:wikipedia\.org|wikidata\.org|doi\.org|who\.int|nih\.gov|nature\.com|nasa\.gov|europa\.eu|reuters\.com|ft\.com|arxiv\.org|ieee\.org|gartner\.com|statista\.com|mckinsey\.com)$/.test(h))
             authoritative++;
         }
-        return authoritative >= 1;
+        return authoritative >= 1 ? null : { kind: "missing", what: "outbound citation to an authoritative source" };
       }), 3),
 
     // --- GEO additions (2026 research: Princeton GEO study + Juma rubric; all crawl-measurable) ---
@@ -529,11 +614,12 @@ export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}
       })(), 2),
     c("G18", "Organization sameAs profiles (Wikidata / Wikipedia / socials)", "geo", 4, "low",
       // sameAs links are the strongest LLM disambiguation anchor (especially a Wikipedia/Wikidata URL).
-      cov((p) => {
+      covR((p) => {
         const block = src(p).match(/"sameAs"\s*:\s*\[([\s\S]*?)\]/i)?.[1] ?? "";
-        if (!block) return false;
-        if (/wikipedia\.org|wikidata\.org/i.test(block)) return true;
-        return (block.match(/https?:\/\/[^"']+/gi) ?? []).length >= 2;
+        if (!block) return { kind: "missing", what: "Organization.sameAs JSON-LD block" };
+        if (/wikipedia\.org|wikidata\.org/i.test(block)) return null;
+        const links = (block.match(/https?:\/\/[^"']+/gi) ?? []).length;
+        return links >= 2 ? null : { kind: "wrong_count", what: "sameAs URLs (Wikipedia/Wikidata or 2+ socials)", actual: links, expected: 2 };
       }), 2),
     c("G19", "Sections open with a direct answer (per H2)", "geo", 8, "medium",
       // The strongest validated GEO signal: each H2 section opens with a self-contained, quotable answer
@@ -567,40 +653,47 @@ export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}
       ), 4),
     c("G20", "TL;DR / Key Takeaways block near the top", "geo", 4, "medium",
       // A quotable summary block in the top quarter of the page is content AI engines lift verbatim.
-      cov((p) => {
+      covR((p) => {
         const m = md(p);
-        if (!m) return false;
+        if (!m) return { kind: "missing", what: "page content" };
         const top = m.slice(0, Math.max(500, Math.floor(m.length * 0.25)));
         const headingRe =
           /(?:^|\n)#{1,6}\s*(?:tl;?dr|key takeaways|in short|in summary|summary|key points|at a glance|the gist|resumen|zusammenfassung|in sintesi|in breve|samenvatting|points? cl[eé]s|en bref|punti chiave|resumo|kernpunten|резюме|обобщение|накратко|ключови изводи|ключови точки|кратко|итоги|ключевые выводы|резиме|podsumowanie|w skrócie|najważniejsze|rezumat|pe scurt)(?![A-Za-z0-9_Ѐ-ӿ])/i;
         const idx = top.search(headingRe);
-        if (idx < 0) return false;
-        return /(?:^|\n)\s*(?:[-*]\s+|\d+\.\s+)/.test(top.slice(idx));
+        if (idx < 0) return { kind: "missing", what: "TL;DR / Key Takeaways heading in the top quarter" };
+        if (/(?:^|\n)\s*(?:[-*]\s+|\d+\.\s+)/.test(top.slice(idx))) return null;
+        return { kind: "other", note: "Key Takeaways heading found but no bullet/numbered list follows" };
       }), 2),
 
     // Tech Basics
     c("TB1", "HTTPS", "tech", 16, "critical",
-      cov((p) => (meta(p).sourceURL ?? rootUrl).startsWith("https://")), 2),
+      covR((p) => (meta(p).sourceURL ?? rootUrl).startsWith("https://") ? null : { kind: "non_https" }), 2),
     cn("TB5", "robots.txt allows crawling", "tech", 8, "critical",
       !aux.robotsFetched ? null : robotsBlocksWholeSite(aux.robotsTxt ?? "") ? 0 : 1, 1),
     c("TB3", "No mixed content", "tech", 8, "high",
-      cov((p) => {
+      covR((p) => {
         const u = meta(p).sourceURL ?? rootUrl;
-        if (!u.startsWith("https://")) return true;
+        if (!u.startsWith("https://")) return null; // HTTPS check is TB1; not "mixed" if page itself is http
         // Mixed content = insecure SUB-RESOURCES (src/srcset/poster, stylesheet href, CSS url()), not
         // ordinary <a href="http://"> navigation, which browsers don't block or warn on.
-        return !(
-          /\b(?:src|srcset|poster)=["']http:\/\//i.test(html(p)) ||
-          /<link[^>]+href=["']http:\/\//i.test(html(p)) ||
-          /url\(\s*['"]?http:\/\//i.test(html(p))
-        );
+        const srcRefs = (html(p).match(/\b(?:src|srcset|poster)=["']http:\/\//gi) ?? []).length;
+        const linkRefs = (html(p).match(/<link[^>]+href=["']http:\/\//gi) ?? []).length;
+        const cssRefs = (html(p).match(/url\(\s*['"]?http:\/\//gi) ?? []).length;
+        const total = srcRefs + linkRefs + cssRefs;
+        return total === 0 ? null : { kind: "wrong_count", what: "insecure http:// sub-resources on an HTTPS page", actual: total, expected: 0 };
       }), 2),
     c("TB4", "Mobile viewport", "tech", 14, "critical",
-      cov((p) => /<meta[^>]+name=["']viewport["']/i.test(src(p))), 1),
+      covR((p) => /<meta[^>]+name=["']viewport["']/i.test(src(p)) ? null : { kind: "missing", what: "<meta name=\"viewport\"> tag" }), 1),
     c("TB10", "Charset & lang declared", "tech", 6, "low",
-      cov((p) => /<meta[^>]+charset/i.test(src(p)) && /<html[^>]+lang=/i.test(src(p))), 1),
+      covR((p) => {
+        const hasCharset = /<meta[^>]+charset/i.test(src(p));
+        const hasLang = /<html[^>]+lang=/i.test(src(p));
+        if (hasCharset && hasLang) return null;
+        if (!hasCharset && !hasLang) return { kind: "missing", what: "<meta charset> and <html lang>" };
+        return { kind: "missing", what: !hasCharset ? "<meta charset>" : "<html lang>" };
+      }), 1),
     c("TB12", "Favicon", "tech", 4, "low",
-      cov((p) => /<link[^>]+rel=["'][^"']*icon/i.test(src(p))), 1),
+      covR((p) => /<link[^>]+rel=["'][^"']*icon/i.test(src(p)) ? null : { kind: "missing", what: "favicon <link rel=\"icon\">" }), 1),
     // Static performance hygiene (proxies, not field CWV): images declare width/height (CLS) and
     // <script src> tags are async/deferred (don't block render). Averaged per page over what's present.
     c("TB6", "Layout stability (img dimensions, CLS proxy)", "tech", 6, "medium",
@@ -641,7 +734,7 @@ export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}
         return s + clamp01((modern / imgs.length + lazy / imgs.length) / 2);
       }, 0) / n), 3),
     c("TB22", "Valid HTML5 doctype", "tech", 3, "low",
-      cov((p) => /^\s*<!doctype html>/i.test(rawHtml(p))), 1),
+      covR((p) => /^\s*<!doctype html>/i.test(rawHtml(p)) ? null : { kind: "missing", what: "<!DOCTYPE html> at document start" }), 1),
 
     // Security headers (folded into Tech Basics). Read once from the root URL's HTTP response (not
     // per page - these are set server/CDN-wide); N/A when headers weren't fetched (unit tests, or the

@@ -167,9 +167,41 @@ const text    = p => (p.markdown || (p.html || '').replace(/<[^>]+>/g, ' ')).rep
 const words   = s => (s || '').split(/\s+/).filter(Boolean).length;
 // Compact path of a URL for per-page evidence ("/about", "/" for root); regex-only (no URL global).
 const pathOf  = (u) => { const m = String(u || '').match(/^https?:\/\/[^/]+(\/[^?#]*)?/i); if (!m) return String(u || '') || '/'; const p = (m[1] || '/').replace(/\/+$/, ''); return p === '' ? '/' : p; };
-// Per-page coverage, RECORDING which sampled pages failed (additive report evidence; ratio = pass/N is
-// unchanged, so scores and parity are unaffected). The builder reads { r, failing } and attaches evidence.
-const cov     = fn => { const failing = []; let pass = 0; for (const p of pages) { if (fn(p)) pass++; else failing.push(pathOf(mt(p).sourceURL || meta.rootUrl || '')); } return { r: pass / N, failing }; };
+// Per-page coverage. covR's diagnostic returns null (= pass) or a structured FailureReason object
+// (= fail with reason). Wrapped in try/catch so a single broken page never aborts the whole audit -
+// a thrown diagnostic is treated as PASS (fail-open) with the error logged. cov is the legacy boolean
+// variant kept for the few checks not yet migrated; both produce { r, failing: Array<{path, reason?}> }.
+const REASON_MAX = 200;
+const sanitizeReason = (r) => {
+  if (!r || typeof r !== 'object') return r;
+  const scrub = (s) => String(s == null ? '' : s).replace(/[\x00-\x1f\x7f]/g, '').slice(0, REASON_MAX);
+  switch (r.kind) {
+    case 'other':       return { kind: 'other', note: scrub(r.note) };
+    case 'missing':     return { kind: 'missing', what: scrub(r.what) };
+    case 'wrong_count': return { kind: 'wrong_count', what: scrub(r.what), actual: r.actual, expected: r.expected };
+    case 'mismatch':    return { kind: 'mismatch', what: scrub(r.what), expected: scrub(r.expected), actual: scrub(r.actual) };
+    default:            return r;
+  }
+};
+const covR = diag => {
+  const failing = []; let pass = 0;
+  for (const p of pages) {
+    const path = pathOf(mt(p).sourceURL || meta.rootUrl || '');
+    let reason = null;
+    try { reason = diag(p); } catch (e) { pass++; continue; }
+    if (reason === null) pass++;
+    else failing.push({ path, reason: sanitizeReason(reason) });
+  }
+  return { r: pass / N, failing };
+};
+const cov = fn => {
+  const failing = []; let pass = 0;
+  for (const p of pages) {
+    if (fn(p)) pass++;
+    else failing.push({ path: pathOf(mt(p).sourceURL || meta.rootUrl || '') });
+  }
+  return { r: pass / N, failing };
+};
 const any     = fn => (pages.some(fn) ? 1 : 0);
 // Tracking detection (once). A crawl usually can't SEE modern injected/bot-gated tracking, so we
 // score by CONFIDENCE: detected -> pass; not detected + (no tracking at all OR GTM may inject it) ->
@@ -209,7 +241,16 @@ const uniqRatio = (vals) => { const v = vals.map(x => (x || '').trim().toLowerCa
 const hostOf = (u) => { const m = String(u || '').match(/^https?:\/\/([^/?#]+)/i); return (m ? m[1] : '').replace(/^www\./, '').toLowerCase(); };
 
 const EVID_CAP = 12; // max page paths listed per check; overflow counted in evidence.more
-const mkEvidence = (failing, checked) => { const uniq = Array.from(new Set(failing)); const ev = { where: 'Across all ' + checked + ' crawled page' + (checked === 1 ? '' : 's'), checked }; if (uniq.length) ev.failing = uniq.slice(0, EVID_CAP); if (uniq.length > EVID_CAP) ev.more = uniq.length - EVID_CAP; return ev; };
+const mkEvidence = (failing, checked) => {
+  // De-dupe by path - two URLs can normalize to the same path (/a and /a/). First-reason wins on
+  // collision, matching checks.ts. failing items are Array<{path, reason?}>.
+  const seen = new Set(); const uniq = [];
+  for (const fp of failing) { if (!seen.has(fp.path)) { seen.add(fp.path); uniq.push(fp); } }
+  const ev = { where: 'Across all ' + checked + ' crawled page' + (checked === 1 ? '' : 's'), checked };
+  if (uniq.length) ev.failing = uniq.slice(0, EVID_CAP);
+  if (uniq.length > EVID_CAP) ev.more = uniq.length - EVID_CAP;
+  return ev;
+};
 const C = (id, label, dimension, weight, severity, ratio, extra = {}) => {
   const isObj = ratio !== null && typeof ratio === 'object';
   const r = ratio === null ? null : (isObj ? ratio.r : ratio);
@@ -244,19 +285,19 @@ const SEMANTIC_IDS = ['G4', 'G6', 'G8', 'G19'];
 const checks = [
   // ---- SEO ----
   C('S1', 'Title present (15-60 chars)', 'seo', 10, 'high',
-    cov(p => { const t = (mt(p).title || '').trim(); return t.length >= 15 && t.length <= 60; }), { effort: 1 }),
+    covR(p => { const t = (mt(p).title || '').trim(); if (t.length === 0) return { kind: 'missing', what: 'title' }; if (t.length < 15) return { kind: 'too_short', actual: t.length, min: 15 }; if (t.length > 60) return { kind: 'too_long', actual: t.length, max: 60 }; return null; }), { effort: 1 }),
   C('S2', 'Meta description (70-160 chars)', 'seo', 7, 'medium',
-    cov(p => { const d = (mt(p).description || '').trim(); return d.length >= 70 && d.length <= 160; }), { effort: 1 }),
+    covR(p => { const d = (mt(p).description || '').trim(); if (d.length === 0) return { kind: 'missing', what: 'meta description' }; if (d.length < 70) return { kind: 'too_short', actual: d.length, min: 70 }; if (d.length > 160) return { kind: 'too_long', actual: d.length, max: 160 }; return null; }), { effort: 1 }),
   C('S3', 'Canonical tag present', 'seo', 8, 'high',
-    cov(p => /<link[^>]+rel=["']canonical["']/i.test(src(p))), { effort: 2 }),
+    covR(p => /<link[^>]+rel=["']canonical["']/i.test(src(p)) ? null : { kind: 'missing', what: 'canonical link tag' }), { effort: 2 }),
   C('S4', 'Indexable (no noindex)', 'seo', 12, 'critical',
-    cov(p => !/<meta[^>]+(?:name=["'](?:robots|googlebot)["'][^>]*content=["'][^"']*noindex|content=["'][^"']*noindex[^>]*name=["'](?:robots|googlebot)["'])/i.test(src(p))), { effort: 1 }),
+    covR(p => /<meta[^>]+(?:name=["'](?:robots|googlebot)["'][^>]*content=["'][^"']*noindex|content=["'][^"']*noindex[^>]*name=["'](?:robots|googlebot)["'])/i.test(src(p)) ? { kind: 'noindex' } : null), { effort: 1 }),
   C('S5', 'At least one H1', 'seo', 7, 'medium',
-    cov(p => (html(p).match(/<h1[\s>]/gi) || []).length >= 1), { effort: 2 }),
+    covR(p => (html(p).match(/<h1[\s>]/gi) || []).length >= 1 ? null : { kind: 'missing', what: 'h1 heading' }), { effort: 2 }),
   C('S10', 'Content depth (>=300 words)', 'seo', 7, 'medium',
-    cov(p => words(text(p)) >= 300), { effort: 4 }),
+    covR(p => { const w = words(text(p)); return w >= 300 ? null : { kind: 'too_short', actual: w, min: 300 }; }), { effort: 4 }),
   C('S12', 'Open Graph tags', 'seo', 4, 'low',
-    cov(p => /property=["']og:(?:title|image)["']/i.test(src(p))), { effort: 1 }),
+    covR(p => /property=["']og:(?:title|image)["']/i.test(src(p)) ? null : { kind: 'missing', what: 'og:title and og:image' }), { effort: 1 }),
   C('S13', 'Image alt coverage', 'seo', 3, 'low',
     pages.reduce((s, p) => { const i = (html(p).match(/<img[\s>]/gi) || []).length; const a = (html(p).match(/<img[^>]+\balt=/gi) || []).length; return s + (i ? a / i : 1); }, 0) / N, { effort: 2 }),
   C('S14', 'XML sitemap present', 'seo', 5, 'medium',
@@ -266,13 +307,13 @@ const checks = [
   C('S16', 'Unique meta descriptions', 'seo', 5, 'medium',
     uniqRatio(pages.map(p => mt(p).description || '')), { effort: 2 }),
   C('S17', 'Sampled pages return OK (no 4xx/5xx or soft-404)', 'seo', 9, 'high',
-    cov(p => { const code = mt(p).statusCode; const httpBroken = code !== undefined && (code < 200 || code >= 400); const title = (mt(p).title || '').toLowerCase(); const h1 = ((html(p).match(/<h1[^>]*>([\s\S]*?)<\/h1>/i) || [])[1] || '').replace(/<[^>]+>/g, ' ').toLowerCase(); const nf = /\b(?:404|not found|page not found|page (?:does ?n'?t|cannot be) found|no longer (?:exists|available))\b/; const softNotFound = (nf.test(title) || nf.test(h1)) && words(text(p)) < 150; return !(httpBroken || softNotFound); }), { effort: 1 }),
+    covR(p => { const code = mt(p).statusCode; if (code !== undefined && (code < 200 || code >= 400)) return { kind: 'http_status', code }; const title = (mt(p).title || '').toLowerCase(); const h1 = ((html(p).match(/<h1[^>]*>([\s\S]*?)<\/h1>/i) || [])[1] || '').replace(/<[^>]+>/g, ' ').toLowerCase(); const nf = /\b(?:404|not found|page not found|page (?:does ?n'?t|cannot be) found|no longer (?:exists|available))\b/; if ((nf.test(title) || nf.test(h1)) && words(text(p)) < 150) return { kind: 'soft_404' }; return null; }), { effort: 1 }),
   C('S18', 'Logical heading hierarchy', 'seo', 6, 'medium',
-    cov(p => { const levels = (html(p).match(/<h([1-6])[\s>]/gi) || []).map(t => Number(t.replace(/\D/g, ''))); if (!levels.length) return false; if (levels.filter(l => l === 1).length !== 1) return false; let prev = 0; for (const l of levels) { if (prev && l > prev + 1) return false; prev = l; } return true; }), { effort: 3 }),
+    covR(p => { const levels = (html(p).match(/<h([1-6])[\s>]/gi) || []).map(t => Number(t.replace(/\D/g, ''))); if (!levels.length) return { kind: 'missing', what: 'heading tags' }; const h1c = levels.filter(l => l === 1).length; if (h1c !== 1) return { kind: 'wrong_count', what: 'h1 heading', actual: h1c, expected: 1 }; let prev = 0; for (const l of levels) { if (prev && l > prev + 1) return { kind: 'other', note: 'heading level h' + prev + ' jumps to h' + l + ' (skipped h' + (prev + 1) + ')' }; prev = l; } return null; }), { effort: 3 }),
   C('S21', 'Valid hreflang (multilingual sites)', 'seo', 6, 'medium',
-    (pages.some(p => /rel=["']alternate["'][^>]*hreflang=/i.test(src(p))) ? cov(p => { const tags = src(p).match(/hreflang=["']([^"']+)["']/gi) || []; return tags.every(t => { const v = ((t.match(/hreflang=["']([^"']+)["']/i) || [])[1] || '').trim(); return /^[a-z]{2,3}(-[a-z]{4})?(-[a-z]{2})?$|^x-default$/i.test(v); }); }) : null), { effort: 4 }),
+    (pages.some(p => /rel=["']alternate["'][^>]*hreflang=/i.test(src(p))) ? covR(p => { const tags = src(p).match(/hreflang=["']([^"']+)["']/gi) || []; for (const t of tags) { const v = ((t.match(/hreflang=["']([^"']+)["']/i) || [])[1] || '').trim(); if (!/^[a-z]{2,3}(-[a-z]{4})?(-[a-z]{2})?$|^x-default$/i.test(v)) return { kind: 'other', note: "invalid hreflang value '" + v.slice(0, 30) + "'" }; } return null; }) : null), { effort: 4 }),
   C('S23', 'Canonical resolves to this page (no cross-page mismatch)', 'seo', 5, 'medium',
-    cov(p => { const m = src(p).match(/<link[^>]+rel=["']canonical["'][^>]*href=["']([^"']+)["']/i) || src(p).match(/<link[^>]+href=["']([^"']+)["'][^>]*rel=["']canonical["']/i); if (!m) return true; const self = mt(p).sourceURL || meta.rootUrl || ''; const origin = (self.match(/^https?:\/\/[^/]+/i) || [''])[0]; let canon = m[1].trim(); if (canon.startsWith('/')) canon = origin + canon; const norm = (u) => u.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/[#?].*$/, '').replace(/\/+$/, '').toLowerCase(); return norm(canon) === norm(self); }), { effort: 2 }),
+    covR(p => { const m = src(p).match(/<link[^>]+rel=["']canonical["'][^>]*href=["']([^"']+)["']/i) || src(p).match(/<link[^>]+href=["']([^"']+)["'][^>]*rel=["']canonical["']/i); if (!m) return null; const self = mt(p).sourceURL || meta.rootUrl || ''; const origin = (self.match(/^https?:\/\/[^/]+/i) || [''])[0]; let canon = m[1].trim(); if (canon.startsWith('/')) canon = origin + canon; const norm = (u) => u.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/[#?].*$/, '').replace(/\/+$/, '').toLowerCase(); if (norm(canon) === norm(self)) return null; const canonPath = (canon.replace(/^https?:\/\/[^/]+/i, '').replace(/[#?].*$/, '') || '/').slice(0, 80); return { kind: 'mismatch', what: 'canonical', expected: pathOf(self), actual: canonPath }; }), { effort: 2 }),
 
   // ---- Tracking & Analytics ----
   // Tracking - scored by detection confidence (det/tNA above). Never critical; an all-N/A tracking
@@ -305,29 +346,29 @@ const checks = [
 
   // ---- AI-Readiness / GEO ----
   C('G1', 'Structured data (JSON-LD) present', 'geo', 8, 'high',
-    cov(p => /<script[^>]+type=["']application\/ld\+json["']/i.test(src(p))), { effort: 2 }),
+    covR(p => /<script[^>]+type=["']application\/ld\+json["']/i.test(src(p)) ? null : { kind: 'missing', what: 'JSON-LD <script>' }), { effort: 2 }),
   C('G3', 'Server-side rendered content', 'geo', 14, 'high',
     (() => { if (!rootHtml) return null; const home = pages.find(p => hostOf(mt(p).sourceURL || '') === hostOf(meta.rootUrl || '')) || pages[0]; if (!home) return null; const strip = s => s.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' '); const rawW = words(strip(rootHtml)); const renW = words(strip(html(home))); if (renW <= 20) return 1; return Math.max(0, Math.min(1, rawW / Math.max(renW * 0.6, 1))); })(), { effort: 5 }),
   C('G4', 'Direct-answer opening', 'geo', 10, 'high',
-    cov(p => { for (const raw of md(p).split('\n')) { const l = raw.trim(); if (!l) continue; if (/^#{1,6}\s/.test(l)) return false; if (/^(?:[-*>|!]|\d+\.\s)/.test(l)) continue; const len = l.replace(/[#*_`>[\]()]/g, '').trim().length; if (len >= 60 && len <= 400 && /[.!?。]$/.test(l)) return true; if (len >= 60) return false; } return false; }), { effort: 3 }),
+    covR(p => { for (const raw of md(p).split('\n')) { const l = raw.trim(); if (!l) continue; if (/^#{1,6}\s/.test(l)) return { kind: 'other', note: 'first content line is a heading, not a lead paragraph' }; if (/^(?:[-*>|!]|\d+\.\s)/.test(l)) continue; const len = l.replace(/[#*_`>[\]()]/g, '').trim().length; if (len >= 60 && len <= 400 && /[.!?。]$/.test(l)) return null; if (len >= 60) return { kind: 'other', note: 'lead paragraph found but it is too long or lacks ending punctuation' }; } return { kind: 'other', note: 'no lead paragraph (60-400 chars) before the first heading' }; }), { effort: 3 }),
   C('G5', 'Q&A / FAQ structure', 'geo', 8, 'medium',
-    cov(p => /FAQPage|"@type"\s*:\s*"Question"/i.test(src(p)) || /(^|\n)#+[^\n]*\?/.test(md(p)) || /<summary[^>]*>[^<]*\?/i.test(html(p))), { effort: 3 }),
+    covR(p => (/FAQPage|"@type"\s*:\s*"Question"/i.test(src(p)) || /(^|\n)#+[^\n]*\?/.test(md(p)) || /<summary[^>]*>[^<]*\?/i.test(html(p))) ? null : { kind: 'missing', what: 'Q&A / FAQ structure' }), { effort: 3 }),
   C('G6', 'Statistics & data points', 'geo', 8, 'medium',
-    cov(p => { const m = md(p); const stats = (m.match(/\d[\d.,]*\s*(?:%|‰|percent|bn|m|k|million|billion|thousand|x)(?![a-z])/gi) || []).length + (m.match(/[€$£¥]\s?\d[\d.,]*/g) || []).length + (m.match(/\b\d+\s*(?:in|of|out of)\s*\d+\b/gi) || []).length; return stats >= 3; }), { effort: 4 }),
+    covR(p => { const m = md(p); const stats = (m.match(/\d[\d.,]*\s*(?:%|‰|percent|bn|m|k|million|billion|thousand|x)(?![a-z])/gi) || []).length + (m.match(/[€$£¥]\s?\d[\d.,]*/g) || []).length + (m.match(/\b\d+\s*(?:in|of|out of)\s*\d+\b/gi) || []).length; return stats >= 3 ? null : { kind: 'wrong_count', what: 'concrete statistics (%, currency, ratios)', actual: stats, expected: 3 }; }), { effort: 4 }),
   C('G7', 'Freshness signals', 'geo', 6, 'medium',
     (pages.reduce((s, p) => { const t = src(p); const m = t.match(/"date(?:Modified|Published)"\s*:\s*"([^"]+)"/i) || t.match(/<time[^>]+datetime=["']([^"']+)["']/i); if (!m) return s + (/last updated|<time/i.test(t) ? 0.3 : 0); const d = Date.parse(m[1]); if (isNaN(d)) return s + 0.3; const days = (Date.now() - d) / 86400000; return s + (days <= 90 ? 1 : days >= 730 ? 0.1 : 1 - ((days - 90) / 640) * 0.9); }, 0) / N), { effort: 3 }),
   C('G8', 'Authorship / E-E-A-T', 'geo', 6, 'medium',
-    cov(p => /"author"|rel=["']author["']|"Organization"|"sameAs"/i.test(src(p))), { effort: 3 }),
+    covR(p => /"author"|rel=["']author["']|"Organization"|"sameAs"/i.test(src(p)) ? null : { kind: 'missing', what: 'author / Organization / sameAs signals' }), { effort: 3 }),
   C('G9', 'AI crawlers not blocked', 'geo', 8, 'high',
     (!robotsFetched ? null : (robotsBlocksAiCrawler(robotsTxt) ? 0 : 1)), { effort: 2 }),
   C('G11', 'Typed schema entities', 'geo', 12, 'high',
-    cov(p => { const s = src(p); return ((/"@type"\s*:\s*"Organization"/i.test(s) && /"(?:name|sameAs|logo)"\s*:/i.test(s)) || (/"@type"\s*:\s*"(?:Article|BlogPosting|NewsArticle)"/i.test(s) && /"author"\s*:/i.test(s) && /"datePublished"\s*:/i.test(s)) || (/"@type"\s*:\s*"Product"/i.test(s) && /"(?:offers|aggregateRating)"\s*:/i.test(s)) || /"@type"\s*:\s*"(?:FAQPage|HowTo|BreadcrumbList|Recipe|Event|LocalBusiness)"/i.test(s)); }), { effort: 3 }),
+    covR(p => { const s = src(p); const pass = ((/"@type"\s*:\s*"Organization"/i.test(s) && /"(?:name|sameAs|logo)"\s*:/i.test(s)) || (/"@type"\s*:\s*"(?:Article|BlogPosting|NewsArticle)"/i.test(s) && /"author"\s*:/i.test(s) && /"datePublished"\s*:/i.test(s)) || (/"@type"\s*:\s*"Product"/i.test(s) && /"(?:offers|aggregateRating)"\s*:/i.test(s)) || /"@type"\s*:\s*"(?:FAQPage|HowTo|BreadcrumbList|Recipe|Event|LocalBusiness)"/i.test(s)); return pass ? null : { kind: 'missing', what: 'typed schema (Organization / Article / Product / FAQ / HowTo / ...)' }; }), { effort: 3 }),
   C('G12', 'Snippet-eligible (no nosnippet)', 'geo', 8, 'high',
-    cov(p => !(/<meta[^>]+name=["']robots["'][^>]*content=["'][^"']*(?:nosnippet|max-snippet:\s*0)/i.test(src(p)) || /nosnippet|max-snippet:\s*0/i.test(hdr('x-robots-tag')))), { effort: 1 }),
+    covR(p => (/<meta[^>]+name=["']robots["'][^>]*content=["'][^"']*(?:nosnippet|max-snippet:\s*0)/i.test(src(p)) || /nosnippet|max-snippet:\s*0/i.test(hdr('x-robots-tag'))) ? { kind: 'other', note: 'nosnippet / max-snippet:0 directive blocks citation' } : null), { effort: 1 }),
   C('G14', 'Extractable formatting (lists/tables)', 'geo', 6, 'medium',
-    cov(p => { const m = md(p); const items = (m.match(/^\s*(?:[-*]\s+|\d+\.\s+)/gm) || []).length; const rows = (m.match(/^\s*\|.*\|\s*$/gm) || []).length; return items >= 3 || rows >= 2 || /<table[\s>]/i.test(html(p)); }), { effort: 2 }),
+    covR(p => { const m = md(p); const items = (m.match(/^\s*(?:[-*]\s+|\d+\.\s+)/gm) || []).length; const rows = (m.match(/^\s*\|.*\|\s*$/gm) || []).length; if (items >= 3 || rows >= 2 || /<table[\s>]/i.test(html(p))) return null; return { kind: 'missing', what: 'extractable lists or tables' }; }), { effort: 2 }),
   C('G15', 'Outbound authoritative citations', 'geo', 8, 'medium',
-    cov(p => { const self = hostOf(mt(p).sourceURL || meta.rootUrl || ''); const re = /\]\((https?:\/\/[^)]+)\)/gi; let m, auth = 0; while ((m = re.exec(md(p)))) { const h = hostOf(m[1]); if (!h || h === self) continue; if (/\.(?:gov|edu|int)(?:\.[a-z]{2})?$/.test(h) || /(?:^|\.)(?:wikipedia\.org|wikidata\.org|doi\.org|who\.int|nih\.gov|nature\.com|nasa\.gov|europa\.eu|reuters\.com|ft\.com|arxiv\.org|ieee\.org|gartner\.com|statista\.com|mckinsey\.com)$/.test(h)) auth++; } return auth >= 1; }), { effort: 3 }),
+    covR(p => { const self = hostOf(mt(p).sourceURL || meta.rootUrl || ''); const re = /\]\((https?:\/\/[^)]+)\)/gi; let m, auth = 0; while ((m = re.exec(md(p)))) { const h = hostOf(m[1]); if (!h || h === self) continue; if (/\.(?:gov|edu|int)(?:\.[a-z]{2})?$/.test(h) || /(?:^|\.)(?:wikipedia\.org|wikidata\.org|doi\.org|who\.int|nih\.gov|nature\.com|nasa\.gov|europa\.eu|reuters\.com|ft\.com|arxiv\.org|ieee\.org|gartner\.com|statista\.com|mckinsey\.com)$/.test(h)) auth++; } return auth >= 1 ? null : { kind: 'missing', what: 'outbound citation to an authoritative source' }; }), { effort: 3 }),
 
   // ---- GEO additions (Princeton GEO + Juma rubric; crawl-measurable) ----
   C('G16', 'llms.txt present', 'geo', 2, 'low',
@@ -335,25 +376,25 @@ const checks = [
   C('G17', 'Entity consistency (brand agrees across schema / og:site_name / title)', 'geo', 6, 'medium',
     (() => { const norm = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, ''); const scores = []; for (const p of pages) { const s = src(p); const og = (s.match(/property=["']og:site_name["'][^>]*content=["']([^"']+)["']/i) || [])[1] || (s.match(/content=["']([^"']+)["'][^>]*property=["']og:site_name["']/i) || [])[1]; const org = (s.match(/"@type"\s*:\s*"Organization"[\s\S]{0,300}?"name"\s*:\s*"([^"]+)"/i) || [])[1]; const ogN = og ? norm(og) : ''; const orgN = org ? norm(org) : ''; const titleN = norm(mt(p).title || ''); const decls = [ogN, orgN].filter(Boolean); if (decls.length === 0) continue; if (decls.length === 2) scores.push((ogN.includes(orgN) || orgN.includes(ogN)) ? 1 : 0.3); else scores.push(titleN.includes(decls[0]) ? 1 : 0.5); } return scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null; })(), { effort: 2 }),
   C('G18', 'Organization sameAs profiles (Wikidata / Wikipedia / socials)', 'geo', 4, 'low',
-    cov(p => { const block = (src(p).match(/"sameAs"\s*:\s*\[([\s\S]*?)\]/i) || [])[1] || ''; if (!block) return false; if (/wikipedia\.org|wikidata\.org/i.test(block)) return true; return (block.match(/https?:\/\/[^"']+/gi) || []).length >= 2; }), { effort: 2 }),
+    covR(p => { const block = (src(p).match(/"sameAs"\s*:\s*\[([\s\S]*?)\]/i) || [])[1] || ''; if (!block) return { kind: 'missing', what: 'Organization.sameAs JSON-LD block' }; if (/wikipedia\.org|wikidata\.org/i.test(block)) return null; const links = (block.match(/https?:\/\/[^"']+/gi) || []).length; return links >= 2 ? null : { kind: 'wrong_count', what: 'sameAs URLs (Wikipedia/Wikidata or 2+ socials)', actual: links, expected: 2 }; }), { effort: 2 }),
   C('G19', 'Sections open with a direct answer (per H2)', 'geo', 8, 'medium',
     pages.reduce((acc, p) => { const sections = md(p).split(/^##\s+.+$/gm).slice(1); if (!sections.length) return acc + 0; const good = sections.filter(sec => { for (const raw of sec.split('\n')) { const l = raw.trim(); if (!l) continue; if (/^#{1,6}\s/.test(l)) return false; if (/^(?:[-*>!|]|\d+\.\s)/.test(l)) continue; const clean = l.replace(/[#*_`>[\]()]/g, '').trim(); const wc = clean.split(/\s+/).filter(Boolean).length; if (wc < 30 || wc > 130) return false; if (/^(?:it|this|that|these|those|they|we|our|here|below|es|sie|wir|dies|diese|hier|il|elle|nous|ici|ce|cette|esto|esta|este|nosotros|questo|questa|deze|dit|това|този|тази|тези|тук|ние|те|нашия|нашата|нашите|это|этот|эта|эти|здесь|мы|они)(?![A-Za-z0-9_Ѐ-ӿ])/i.test(clean)) return false; return true; } return false; }).length; return acc + good / sections.length; }, 0) / N, { effort: 4 }),
   C('G20', 'TL;DR / Key Takeaways block near the top', 'geo', 4, 'medium',
-    cov(p => { const m = md(p); if (!m) return false; const top = m.slice(0, Math.max(500, Math.floor(m.length * 0.25))); const re = /(?:^|\n)#{1,6}\s*(?:tl;?dr|key takeaways|in short|in summary|summary|key points|at a glance|the gist|resumen|zusammenfassung|in sintesi|in breve|samenvatting|points? cl[eé]s|en bref|punti chiave|resumo|kernpunten|резюме|обобщение|накратко|ключови изводи|ключови точки|кратко|итоги|ключевые выводы|резиме|podsumowanie|w skrócie|najważniejsze|rezumat|pe scurt)(?![A-Za-z0-9_Ѐ-ӿ])/i; const idx = top.search(re); if (idx < 0) return false; return /(?:^|\n)\s*(?:[-*]\s+|\d+\.\s+)/.test(top.slice(idx)); }), { effort: 2 }),
+    covR(p => { const m = md(p); if (!m) return { kind: 'missing', what: 'page content' }; const top = m.slice(0, Math.max(500, Math.floor(m.length * 0.25))); const re = /(?:^|\n)#{1,6}\s*(?:tl;?dr|key takeaways|in short|in summary|summary|key points|at a glance|the gist|resumen|zusammenfassung|in sintesi|in breve|samenvatting|points? cl[eé]s|en bref|punti chiave|resumo|kernpunten|резюме|обобщение|накратко|ключови изводи|ключови точки|кратко|итоги|ключевые выводы|резиме|podsumowanie|w skrócie|najważniejsze|rezumat|pe scurt)(?![A-Za-z0-9_Ѐ-ӿ])/i; const idx = top.search(re); if (idx < 0) return { kind: 'missing', what: 'TL;DR / Key Takeaways heading in the top quarter' }; if (/(?:^|\n)\s*(?:[-*]\s+|\d+\.\s+)/.test(top.slice(idx))) return null; return { kind: 'other', note: 'Key Takeaways heading found but no bullet/numbered list follows' }; }), { effort: 2 }),
 
   // ---- Tech Basics ----
   C('TB1', 'HTTPS', 'tech', 16, 'critical',
-    cov(p => (mt(p).sourceURL || meta.rootUrl || '').startsWith('https://')), { effort: 2 }),
+    covR(p => (mt(p).sourceURL || meta.rootUrl || '').startsWith('https://') ? null : { kind: 'non_https' }), { effort: 2 }),
   C('TB5', 'robots.txt allows crawling', 'tech', 8, 'critical',
     (!robotsFetched ? null : (robotsBlocksWholeSite(robotsTxt) ? 0 : 1)), { effort: 1 }),
   C('TB3', 'No mixed content', 'tech', 8, 'high',
-    cov(p => { const u = (mt(p).sourceURL || meta.rootUrl || ''); if (!u.startsWith('https://')) return true; return !(/\b(?:src|srcset|poster)=["']http:\/\//i.test(html(p)) || /<link[^>]+href=["']http:\/\//i.test(html(p)) || /url\(\s*['"]?http:\/\//i.test(html(p))); }), { effort: 2 }),
+    covR(p => { const u = (mt(p).sourceURL || meta.rootUrl || ''); if (!u.startsWith('https://')) return null; const sr = (html(p).match(/\b(?:src|srcset|poster)=["']http:\/\//gi) || []).length; const lr = (html(p).match(/<link[^>]+href=["']http:\/\//gi) || []).length; const cr = (html(p).match(/url\(\s*['"]?http:\/\//gi) || []).length; const total = sr + lr + cr; return total === 0 ? null : { kind: 'wrong_count', what: 'insecure http:// sub-resources on an HTTPS page', actual: total, expected: 0 }; }), { effort: 2 }),
   C('TB4', 'Mobile viewport', 'tech', 14, 'critical',
-    cov(p => /<meta[^>]+name=["']viewport["']/i.test(src(p))), { effort: 1 }),
+    covR(p => /<meta[^>]+name=["']viewport["']/i.test(src(p)) ? null : { kind: 'missing', what: '<meta name="viewport"> tag' }), { effort: 1 }),
   C('TB10', 'Charset & lang declared', 'tech', 6, 'low',
-    cov(p => /<meta[^>]+charset/i.test(src(p)) && /<html[^>]+lang=/i.test(src(p))), { effort: 1 }),
+    covR(p => { const hc = /<meta[^>]+charset/i.test(src(p)); const hl = /<html[^>]+lang=/i.test(src(p)); if (hc && hl) return null; if (!hc && !hl) return { kind: 'missing', what: '<meta charset> and <html lang>' }; return { kind: 'missing', what: !hc ? '<meta charset>' : '<html lang>' }; }), { effort: 1 }),
   C('TB12', 'Favicon', 'tech', 4, 'low',
-    cov(p => /<link[^>]+rel=["'][^"']*icon/i.test(src(p))), { effort: 1 }),
+    covR(p => /<link[^>]+rel=["'][^"']*icon/i.test(src(p)) ? null : { kind: 'missing', what: 'favicon <link rel="icon">' }), { effort: 1 }),
   // CLS proxy (not measured CWV): images declare width+height or aspect-ratio so they don't reflow.
   C('TB6', 'Layout stability (img dimensions, CLS proxy)', 'tech', 6, 'medium',
     pages.reduce((s, p) => { const imgs = html(p).match(/<img\b[^>]*>/gi) || []; if (!imgs.length) return s + 1; const ok = imgs.filter(t => (/\bwidth=/i.test(t) && /\bheight=/i.test(t)) || /aspect-ratio/i.test(t)).length; return s + ok / imgs.length; }, 0) / N, { effort: 3 }),
@@ -362,7 +403,7 @@ const checks = [
   C('TB19', 'Modern image formats & lazy-loading', 'tech', 6, 'medium',
     pages.reduce((s, p) => { const h = html(p); const imgs = h.match(/<img\b[^>]*>/gi) || []; if (!imgs.length) return s + 1; const cdnOpt = imgs.filter(t => /res\.cloudinary\.com|\.imgix\.net|imagedelivery\.net|\/cdn-cgi\/image\/|\/_next\/image|\/_vercel\/image|cdn\.shopify\.com|\.twic\.pics|wsrv\.nl/i.test(t)).length; const modern = Math.min((h.match(/\.(?:webp|avif)\b/gi) || []).length + (h.match(/<picture[\s>]/gi) || []).length + cdnOpt, imgs.length); const lazy = imgs.filter(t => /loading=["']lazy["']/i.test(t)).length; return s + Math.max(0, Math.min(1, (modern / imgs.length + lazy / imgs.length) / 2)); }, 0) / N, { effort: 3 }),
   C('TB22', 'Valid HTML5 doctype', 'tech', 3, 'low',
-    cov(p => /^\s*<!doctype html>/i.test(rawHtml(p))), { effort: 1 }),
+    covR(p => /^\s*<!doctype html>/i.test(rawHtml(p)) ? null : { kind: 'missing', what: '<!DOCTYPE html> at document start' }), { effort: 1 }),
 
   // ---- Tech Basics: security headers (root URL response; N/A if not fetched; never critical) ----
   C('TB30', 'HSTS (Strict-Transport-Security)', 'tech', 6, 'medium',
