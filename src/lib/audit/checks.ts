@@ -349,21 +349,34 @@ export function runChecks(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {}
     cn("T15", "dataLayer initialized", "tracking", 3, "low",
       det.dataLayer ? 1 : null, 1), // positive-only
     cn("T20", "Consent Mode default set before tags load", "tracking", 6, "medium",
-      // When a gtag('consent','default') AND a tag loader are BOTH inline in the HTML, the default must
-      // come FIRST or the initial tags fire before consent is applied (a real privacy bug). Only
-      // assessable from the HTML; if consent is configured via GTM (not inline) -> N/A.
+      // Source-order check on the STATIC (no-JS) HTML only. A browser-rendered DOM has the gtm.js /
+      // gtag.js loader injected to the very top of <head> by Google's snippet (insertBefore(j,
+      // firstScript)), which flips the order and would false-fail a correctly configured site. So we
+      // use aux.rootHtml - the separate no-JS GET of the root - as the only honest source. If it's
+      // not present, or either marker isn't there, we report N/A instead of guessing.
+      //
+      // Patterns handled:
+      //  PASS  - Standard GTM snippet: <script>gtag('consent','default',...)</script> followed by
+      //          <script>(function(w,d,s,l,i){... 'gtm.js?id='+i ...})(...);</script>. The loader URL
+      //          appears as a string inside the inline IIFE body, after the consent default.
+      //  PASS  - Direct <script src="...gtag/js?id=G-..."> with the inline consent default above it.
+      //  PASS  - Same-script setup: a single inline <script> that sets the default first, then either
+      //          embeds the GTM URL or kicks off the loader - both markers in the same script body,
+      //          cIdx < lIdx.
+      //  PASS  - Multiple loaders (e.g. one gtag/js per measurement id): the *first* loader is what
+      //          matters; if the consent default precedes the first match, it precedes them all.
+      //  FAIL  - Loader / snippet placed above the consent default - the real privacy bug.
+      //  N/A   - Consent default set client-side by a CMP (Cookiebot, OneTrust, etc.) without a
+      //          literal gtag('consent','default') in static HTML.
+      //  N/A   - Server-side GTM on a custom domain (not googletagmanager.com).
+      //  N/A   - aux.rootHtml not fetched (e.g. root fetch failed, plain HTTP errors).
       (() => {
-        let assessable = false;
-        let ok = true;
-        for (const p of sample) {
-          const s = src(p);
-          const cIdx = s.search(/gtag\(\s*['"]consent['"]\s*,\s*['"]default['"]/i);
-          const lIdx = s.search(/googletagmanager\.com\/(?:gtm\.js|gtag\/js)/i);
-          if (cIdx < 0 || lIdx < 0) continue;
-          assessable = true;
-          if (cIdx > lIdx) ok = false;
-        }
-        return assessable ? (ok ? 1 : 0) : null;
+        const raw = aux.rootHtml ?? "";
+        if (!raw) return null;
+        const cIdx = raw.search(/gtag\(\s*['"]consent['"]\s*,\s*['"]default['"]/i);
+        const lIdx = raw.search(/googletagmanager\.com\/(?:gtm\.js|gtag\/js)/i);
+        if (cIdx < 0 || lIdx < 0) return null;
+        return cIdx < lIdx ? 1 : 0;
       })(), 3),
 
     // AI-Readiness / GEO

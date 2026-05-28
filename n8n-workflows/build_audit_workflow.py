@@ -292,7 +292,16 @@ const checks = [
   C('T15', 'dataLayer initialized', 'tracking', 3, 'low',
     (det.dataLayer ? 1 : null), { effort: 1 }),
   C('T20', 'Consent Mode default set before tags load', 'tracking', 6, 'medium',
-    (() => { let assessable = false, ok = true; for (const p of pages) { const s = src(p); const cIdx = s.search(/gtag\(\s*['"]consent['"]\s*,\s*['"]default['"]/i); const lIdx = s.search(/googletagmanager\.com\/(?:gtm\.js|gtag\/js)/i); if (cIdx < 0 || lIdx < 0) continue; assessable = true; if (cIdx > lIdx) ok = false; } return assessable ? (ok ? 1 : 0) : null; })(), { effort: 3 }),
+    // Source-order check on the STATIC (no-JS) HTML only - rootHtml above is the body of the plain
+    // "Fetch headers" GET, before any JS. The browser-rendered DOM has the gtm.js / gtag.js loader
+    // injected to the very top of <head> by Google's snippet (insertBefore(j, firstScript)), which
+    // flips the order and false-fails a correctly configured site - so we never look at per-page
+    // rawHtml here. PASS = consent default string precedes the first googletagmanager.com URL in the
+    // no-JS HTML (which covers the standard inline GTM snippet where the URL is a string inside the
+    // bootstrap IIFE, direct <script src="...gtag/js">, and same-script setups). FAIL = the loader/
+    // snippet comes first. N/A = no rootHtml, no consent-default literal (CMP-managed), or no
+    // googletagmanager.com URL (server-side GTM on a custom domain).
+    (() => { if (!rootHtml) return null; const cIdx = rootHtml.search(/gtag\(\s*['"]consent['"]\s*,\s*['"]default['"]/i); const lIdx = rootHtml.search(/googletagmanager\.com\/(?:gtm\.js|gtag\/js)/i); if (cIdx < 0 || lIdx < 0) return null; return cIdx < lIdx ? 1 : 0; })(), { effort: 3 }),
 
   // ---- AI-Readiness / GEO ----
   C('G1', 'Structured data (JSON-LD) present', 'geo', 8, 'high',

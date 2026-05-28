@@ -62,7 +62,9 @@ const badPage: CrawledPage = {
 badPage.html = badPage.rawHtml;
 
 describe("runChecks - well-built page", () => {
-  const checks = runChecks([goodPage], "https://acme.example/");
+  // T20 reads aux.rootHtml (the no-JS source-of-truth); for the in-test "well-built page" the
+  // page's static HTML IS the no-JS HTML, so we mirror it into aux.rootHtml.
+  const checks = runChecks([goodPage], "https://acme.example/", { rootHtml: goodPage.rawHtml });
   it("passes the key SEO/structure checks", () => {
     expect(ratio(checks, "S1")).toBe(1); // title length ok
     expect(ratio(checks, "S3")).toBe(1); // canonical
@@ -449,12 +451,107 @@ describe("runChecks - canonical mismatch (S23) + consent ordering (T20)", () => 
     expect(ratio(runChecks([p], "https://x.example/"), "S23")).toBe(1);
   });
 
+  // T20 reads aux.rootHtml (the no-JS source-of-truth). For each fixture below we mirror the page's
+  // static HTML into both the page object AND aux.rootHtml so the check sees what it would see in a
+  // real audit where the n8n "Fetch headers" node provides the no-JS GET body.
+  const t20 = (rawHtml: string) => {
+    const p = page(rawHtml);
+    return ratio(runChecks([p], "https://x.example/", { rootHtml: rawHtml }), "T20");
+  };
+
   it("T20: consent-before-loader passes, loader-before-consent fails, not-inline is N/A", () => {
-    const before = page('<html><head><script>gtag(\'consent\',\'default\',{ad_storage:\'denied\'})</script><script src="https://www.googletagmanager.com/gtm.js?id=GTM-X"></script></head><body></body></html>');
-    expect(ratio(runChecks([before], "https://x.example/"), "T20")).toBe(1);
-    const after = page('<html><head><script src="https://www.googletagmanager.com/gtm.js?id=GTM-X"></script><script>gtag(\'consent\',\'default\',{ad_storage:\'denied\'})</script></head><body></body></html>');
-    expect(ratio(runChecks([after], "https://x.example/"), "T20")).toBe(0);
-    const gtmOnly = page('<html><head><script src="https://www.googletagmanager.com/gtm.js?id=GTM-X"></script></head><body></body></html>');
-    expect(ratio(runChecks([gtmOnly], "https://x.example/"), "T20")).toBeNull();
+    const before = '<html><head><script>gtag(\'consent\',\'default\',{ad_storage:\'denied\'})</script><script src="https://www.googletagmanager.com/gtm.js?id=GTM-X"></script></head><body></body></html>';
+    expect(t20(before)).toBe(1);
+    const after = '<html><head><script src="https://www.googletagmanager.com/gtm.js?id=GTM-X"></script><script>gtag(\'consent\',\'default\',{ad_storage:\'denied\'})</script></head><body></body></html>';
+    expect(t20(after)).toBe(0);
+    const gtmOnly = '<html><head><script src="https://www.googletagmanager.com/gtm.js?id=GTM-X"></script></head><body></body></html>';
+    expect(t20(gtmOnly)).toBeNull();
+  });
+
+  it("T20: standard GTM snippet (URL appears as a STRING inside the inline IIFE)", () => {
+    // Google's official GTM snippet has the gtm.js URL as a string literal inside an inline
+    // bootstrap function - there is NO <script src=> tag in static HTML. The consent default must
+    // still appear before that snippet's body in source order.
+    const goodSnippet = `<html><head>
+      <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}
+      gtag('consent','default',{ad_storage:'denied',analytics_storage:'denied',ad_user_data:'denied',ad_personalization:'denied'});</script>
+      <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});
+      var f=d.getElementsByTagName(s)[0],j=d.createElement(s);j.async=true;
+      j.src='https://www.googletagmanager.com/gtm.js?id='+i;f.parentNode.insertBefore(j,f);
+      })(window,document,'script','dataLayer','GTM-XXXXXX');</script>
+      </head><body></body></html>`;
+    expect(t20(goodSnippet)).toBe(1);
+
+    // The same snippet with the bootstrap moved ABOVE the consent default is the real privacy bug:
+    // the URL string still appears inside the snippet body but now earlier in the document.
+    const badSnippet = `<html><head>
+      <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});
+      var f=d.getElementsByTagName(s)[0],j=d.createElement(s);j.async=true;
+      j.src='https://www.googletagmanager.com/gtm.js?id='+i;f.parentNode.insertBefore(j,f);
+      })(window,document,'script','dataLayer','GTM-XXXXXX');</script>
+      <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}
+      gtag('consent','default',{ad_storage:'denied'});</script>
+      </head><body></body></html>`;
+    expect(t20(badSnippet)).toBe(0);
+  });
+
+  it("T20: same-script setup (default + loader URL in the same inline body) - order inside the body counts", () => {
+    const sameScriptOk = `<html><head>
+      <script>
+        window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}
+        gtag('consent','default',{ad_storage:'denied'});
+        // GTM bootstrap inlined right below in the SAME tag
+        (function(w,d,s,l,i){var j=d.createElement(s);j.src='https://www.googletagmanager.com/gtm.js?id='+i;
+        d.head.appendChild(j);})(window,document,'script','dataLayer','GTM-ZZ');
+      </script></head><body></body></html>`;
+    expect(t20(sameScriptOk)).toBe(1);
+  });
+
+  it("T20: multiple gtag/js loaders - the FIRST one is what the consent default must precede", () => {
+    const multi = `<html><head>
+      <script>gtag('consent','default',{ad_storage:'denied'});</script>
+      <script async src="https://www.googletagmanager.com/gtag/js?id=G-AAAAAAAAA1"></script>
+      <script async src="https://www.googletagmanager.com/gtag/js?id=G-BBBBBBBBB2"></script>
+      </head><body></body></html>`;
+    expect(t20(multi)).toBe(1);
+  });
+
+  it("T20: gtag.js (Google tag) direct loader patterns - both good and bad orderings", () => {
+    const good = '<html><head><script>gtag(\'consent\',\'default\',{ad_storage:\'denied\'})</script><script async src="https://www.googletagmanager.com/gtag/js?id=G-X82LR0DK3V"></script></head><body></body></html>';
+    expect(t20(good)).toBe(1);
+    const bad = '<html><head><script async src="https://www.googletagmanager.com/gtag/js?id=G-X82LR0DK3V"></script><script>gtag(\'consent\',\'default\',{ad_storage:\'denied\'})</script></head><body></body></html>';
+    expect(t20(bad)).toBe(0);
+  });
+
+  it("T20: server-side GTM on a custom domain is N/A (custom host, not googletagmanager.com)", () => {
+    // First-party server-side GTM has a different deployment + consent model; T20's static
+    // source-order heuristic isn't meaningful, so we report N/A rather than guess.
+    const sgtm = '<html><head><script>gtag(\'consent\',\'default\',{ad_storage:\'denied\'})</script><script async src="https://gtm.mysite.example/gtm.js?id=GTM-Z"></script></head><body></body></html>';
+    expect(t20(sgtm)).toBeNull();
+  });
+
+  it("T20: CMP-managed consent without a literal gtag('consent','default') in static HTML is N/A", () => {
+    // Cookiebot / OneTrust / etc. inject the consent default at runtime; nothing about it is in the
+    // static HTML, so the check honestly reports N/A.
+    const cmp = '<html><head><script src="https://consent.cookiebot.com/uc.js?cbid=x"></script><script async src="https://www.googletagmanager.com/gtm.js?id=GTM-X"></script></head><body></body></html>';
+    expect(t20(cmp)).toBeNull();
+  });
+
+  it("T20: aux.rootHtml missing (root fetch failed) -> N/A even if the page has the markers", () => {
+    // If the no-JS root fetch failed we have no honest source for the order check. We must NOT fall
+    // back to the (rendered) per-page HTML, because Firecrawl's rawHtml is post-render in production
+    // and the gtag.js loader is injected to the top of <head> there - which would false-fail a
+    // correctly configured site. Better to report N/A than report a wrong answer.
+    const p = page('<html><head><script>gtag(\'consent\',\'default\',{ad_storage:\'denied\'})</script><script async src="https://www.googletagmanager.com/gtag/js?id=G-X"></script></head><body></body></html>');
+    expect(ratio(runChecks([p], "https://x.example/"), "T20")).toBeNull();
+    expect(ratio(runChecks([p], "https://x.example/", { rootHtml: "" }), "T20")).toBeNull();
+  });
+
+  it("T20: tolerates whitespace, mixed quotes and case inside the gtag(...) call", () => {
+    const spaced = `<html><head>
+      <script>gtag(  "consent" ,  "default" , { ad_storage: 'denied' })</script>
+      <script async src="https://www.googletagmanager.com/gtag/js?id=G-X"></script>
+      </head><body></body></html>`;
+    expect(t20(spaced)).toBe(1);
   });
 });
