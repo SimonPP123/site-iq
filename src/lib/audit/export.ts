@@ -222,7 +222,7 @@ export function toMarkdown(m: ExportModel): string {
   L.push(`- Generated: ${m.generatedAt}`);
   const cov = m.coverage;
   const covBits = [`${cov.pagesAudited.length} pages audited`];
-  if (cov.pagesWithIssues != null) covBits.push(`${cov.pagesWithIssues} with issues`);
+  if (cov.pagesWithIssues !== null) covBits.push(`${cov.pagesWithIssues} with issues`);
   if (cov.pagesExcluded) covBits.push(`${cov.pagesExcluded} excluded (sensitive-path filter)`);
   if (cov.pagesFailed.length) covBits.push(`${cov.pagesFailed.length} could not be crawled`);
   L.push(`- Coverage: ${covBits.join(", ")}`, "");
