@@ -18,6 +18,7 @@ import { ContactCTA } from "./ContactCTA";
 import { ContactCtaPopup } from "./ContactCtaPopup";
 import { CrawledPagesSection } from "./CrawledPagesSection";
 import type { CheckResult, DimensionResult, AuditResult, FailingPage, FailureReason } from "@/lib/audit/types";
+import { buildExportModel, toMarkdown, toJson } from "@/lib/audit/export";
 
 /** Defensive normalizer: reports persisted BEFORE the failingDetails migration have `failing: string[]`;
  *  reports persisted AFTER have `failing: Array<{path, reason?}>`. Accept both at render time so old
@@ -61,6 +62,29 @@ type Check = Pick<CheckResult, "id" | "label" | "ratio" | "evidence" | "severity
  * slim Check projection (the view only reads id/label/ratio) and made optional
  * (not every code path guarantees the checks array is populated).
  */
+/**
+ * Generate the LLM-friendly export from the in-memory result and trigger a client-side download.
+ * `result` is typed slim for the UI but is the FULL AuditResult at runtime (normalizeReport runs
+ * parseAuditResult), so this produces the same content as GET /api/audit/[id]/export - and works on
+ * the public /sample demo too (no auth / no real report row needed). The API route remains for
+ * programmatic/agent access.
+ */
+function downloadAuditExport(result: AuditResult, domain: string, format: "md" | "json") {
+  if (typeof window === "undefined") return;
+  const model = buildExportModel(result, { domain, generatedAt: new Date().toISOString() });
+  const slug = domain.toLowerCase().replace(/[^a-z0-9.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "site";
+  const content = format === "json" ? toJson(model) : toMarkdown(model);
+  const blob = new Blob([content], { type: format === "json" ? "application/json" : "text/markdown" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `site-iq-${slug}.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 type Dimension = Omit<DimensionResult, "checks"> & { checks?: Check[] };
 
 /**
@@ -541,11 +565,11 @@ export function ReportView({
             <section className="mt-8">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-lg font-semibold">Findings &amp; action plan</h2>
-                {report.status === "done" && !demo && (
+                {report.status === "done" && result && (
                   <span className="inline-flex items-center gap-2">
-                    <a
-                      href={`/api/audit/${report.id}/export?format=md`}
-                      download
+                    <button
+                      type="button"
+                      onClick={() => downloadAuditExport(result as unknown as AuditResult, report.domain, "md")}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:border-accent/60 hover:text-foreground"
                       title="Download this audit as an LLM-friendly Markdown file - ready to paste into an AI IDE or agent"
                     >
@@ -553,15 +577,15 @@ export function ReportView({
                         <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16" strokeLinecap="round" strokeLinejoin="round" />
                       </svg>
                       Export for AI
-                    </a>
-                    <a
-                      href={`/api/audit/${report.id}/export?format=json`}
-                      download
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => downloadAuditExport(result as unknown as AuditResult, report.domain, "json")}
                       className="text-xs text-muted-foreground underline-offset-2 transition hover:text-foreground hover:underline"
                       title="Download the same audit as structured JSON"
                     >
                       JSON
-                    </a>
+                    </button>
                   </span>
                 )}
               </div>
