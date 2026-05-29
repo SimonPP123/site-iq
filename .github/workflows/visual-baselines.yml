@@ -50,7 +50,7 @@ jobs:
       # maintainer downloads it and commits the PNGs (an admin push bypasses the protection). This
       # keeps the workflow green and the baseline change reviewable.
       - name: Upload regenerated baselines
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: visual-baselines-linux
           path: tests/visual.spec.ts-snapshots/
