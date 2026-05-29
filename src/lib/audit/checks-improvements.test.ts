@@ -147,7 +147,7 @@ describe("Tier-1 structural improvements", () => {
 });
 
 /**
- * Tier-3 accuracy fixes (2026-05-28 multi-agent audit): false positives a paying / partner reviewer
+ * Tier-3 accuracy fixes (2026-05-28 multi-agent audit): false positives a paying reviewer
  * would catch. Each is mirrored in the n8n port and guarded by parity.test.ts.
  */
 describe("Tier-3 accuracy fixes", () => {

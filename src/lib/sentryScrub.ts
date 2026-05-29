@@ -5,7 +5,7 @@ import type { Breadcrumb, Event, EventHint } from "@sentry/nextjs";
  * paths (`result.pages[].path`, `result.pagesFailed[].path`, `result.dimensions[*].checks[*].evidence.failing[].path`).
  * If any of those flow into Sentry contexts/extra/breadcrumbs via an unhandled exception, we're
  * leaking what could plausibly be PII-adjacent information about a third-party site to a US-hosted
- * error-tracking service. GDPR-adjacent for EU customers (partner clients are likely EU).
+ * error-tracking service. GDPR-adjacent for EU customers (likely EU-based).
  *
  * The TS engine + n8n PICK_JS already filter sensitive paths upstream (`SENSITIVE_PATH_RE` in
  * Phase 2A) so what flows through here is non-admin / non-login by definition; this is
@@ -74,7 +74,7 @@ function scrubInPlace(node: unknown, depth: number, seen: WeakSet<object>): void
  * value still says WHICH service failed. The field-name walk (scrubInPlace) only catches structured
  * data; a thrown Error on the audit/chat path embeds the user-submitted target URL directly in
  * event.message / event.exception[].value (DNS/fetch failures, third-party lib exceptions). For
- * EU/partner clients that crawled path is the GDPR-adjacent leak the whole scrubber exists to
+ * EU customers, for whom the crawled path is the GDPR-adjacent leak the whole scrubber exists to
  * prevent, via the one channel the structured walk does not cover.
  * `https://victim.example/customer/42?token=x` -> `https://victim.example/[redacted]`
  * Handles query-only URLs (no path slash) and strips userinfo, since those also carry secrets:
