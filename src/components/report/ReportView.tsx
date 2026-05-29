@@ -659,10 +659,6 @@ export function ReportView({
               })()}
             </section>
 
-            {/* Sentinel: when this scrolls into view the reader has passed the findings - one of the
-                two conditions (with a dwell timer) that arms the ContactCtaPopup nudge below. */}
-            <div id="report-findings-end" aria-hidden="true" />
-
             <WhatWeChecked dimensions={result.dimensions} />
 
             {report.status === "done" &&
@@ -691,8 +687,8 @@ export function ReportView({
                 <div id="report-static-cta">
                   <ContactCTA domain={report.domain} />
                 </div>
-                {/* Non-blocking slide-in nudge: fires after the reader has scrolled past the findings
-                    AND dwelled ~20s, but not while the static CTA above is already visible. */}
+                {/* Non-blocking slide-in nudge: fires after the reader has scrolled down a bit AND
+                    dwelled ~10s, but not while the static CTA above is already visible. */}
                 <ContactCtaPopup domain={report.domain} reportId={report.id} />
               </>
             )}

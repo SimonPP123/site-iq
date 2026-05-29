@@ -6,38 +6,40 @@ import { trackContactCtaClick } from "@/lib/analytics";
 
 /**
  * A non-blocking "get a hand fixing these" nudge that slides in from the bottom-right AFTER the
- * reader has had time to explore - it appears only once the user has scrolled past the findings AND
- * spent enough time on the page, and never while the static end-of-report CTA is already on screen
- * (no double-nudge). Dismissable (X / Esc), remembered per-report in localStorage so it never
- * re-pops, and suppressed entirely once dismissed or clicked. Shown on real reports only - the
- * caller gates it on `status === "done" && !demo`, exactly like the static <ContactCTA>.
+ * reader has had a moment to explore. It appears once the reader has scrolled down into the report
+ * (any meaningful downward scroll) AND has spent ~10s on the page - and it stays eligible even if
+ * they then scroll back to the top, because the scroll signal LATCHES. It never shows while the
+ * static end-of-report CTA is already on screen (no double-nudge). Dismissable (X / Esc), remembered
+ * per-report in localStorage so it never re-pops, and suppressed once dismissed or clicked. Shown on
+ * real reports only - the caller gates it on `status === "done" && !demo`, like the static <ContactCTA>.
  *
  * The trigger predicate is split out as a pure function so it can be unit-tested without a DOM.
  */
 export function shouldShowCtaPopup(s: {
-  scrolledPastFindings: boolean;
+  hasScrolledDown: boolean;
   dwellElapsed: boolean;
   staticCtaVisible: boolean;
   dismissed: boolean;
 }): boolean {
-  return s.scrolledPastFindings && s.dwellElapsed && !s.staticCtaVisible && !s.dismissed;
+  return s.hasScrolledDown && s.dwellElapsed && !s.staticCtaVisible && !s.dismissed;
 }
 
-const DWELL_MS = 20_000; // give the reader ~20s with the report before nudging
+const DWELL_MS = 10_000; // give the reader ~10s with the report before nudging
+// "Some scroll down" - a few wheel ticks. Low enough that any real engagement arms it, high enough
+// that an accidental jog of the page does not. Once crossed it latches (see the effect below).
+const SCROLL_THRESHOLD_PX = 300;
 const dismissKey = (reportId: string) => `siteiq-cta-dismissed-${reportId}`;
 
 export function ContactCtaPopup({
   domain,
   reportId,
-  findingsAnchorId = "report-findings-end",
   staticCtaId = "report-static-cta",
 }: {
   domain: string;
   reportId: string;
-  findingsAnchorId?: string;
   staticCtaId?: string;
 }) {
-  const [scrolledPastFindings, setScrolledPast] = useState(false);
+  const [hasScrolledDown, setHasScrolledDown] = useState(false);
   const [dwellElapsed, setDwellElapsed] = useState(false);
   const [staticCtaVisible, setStaticCtaVisible] = useState(false);
   // Start "dismissed" so nothing can flash before we've read prior state from localStorage.
@@ -62,28 +64,36 @@ export function ContactCtaPopup({
     return () => clearTimeout(t);
   }, []);
 
-  // Arm on scrolling past the findings; suppress while the static bottom CTA is on screen.
+  // Arm once the reader has scrolled down past the threshold. This LATCHES: once they have scrolled
+  // down, the signal stays armed even if they scroll back to the top - so the nudge can still appear
+  // wherever they are on the page, as long as there was some downward scroll at some point.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.scrollY > SCROLL_THRESHOLD_PX) {
+      setHasScrolledDown(true); // already scrolled (e.g. a restored scroll position) - no listener needed
+      return;
+    }
+    const onScroll = () => {
+      if (window.scrollY > SCROLL_THRESHOLD_PX) {
+        setHasScrolledDown(true);
+        window.removeEventListener("scroll", onScroll);
+      }
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Suppress while the static bottom CTA is on screen (no double-nudge); re-eligible once it scrolls off.
   useEffect(() => {
     if (typeof IntersectionObserver === "undefined") return;
-    const observers: IntersectionObserver[] = [];
-    const findings = document.getElementById(findingsAnchorId);
-    if (findings) {
-      const io = new IntersectionObserver((entries) => {
-        if (entries.some((e) => e.isIntersecting)) setScrolledPast(true); // latch: once past, stays armed
-      });
-      io.observe(findings);
-      observers.push(io);
-    }
     const staticCta = document.getElementById(staticCtaId);
-    if (staticCta) {
-      const io = new IntersectionObserver((entries) => {
-        setStaticCtaVisible(entries.some((e) => e.isIntersecting));
-      });
-      io.observe(staticCta);
-      observers.push(io);
-    }
-    return () => observers.forEach((o) => o.disconnect());
-  }, [findingsAnchorId, staticCtaId]);
+    if (!staticCta) return;
+    const io = new IntersectionObserver((entries) => {
+      setStaticCtaVisible(entries.some((e) => e.isIntersecting));
+    });
+    io.observe(staticCta);
+    return () => io.disconnect();
+  }, [staticCtaId]);
 
   const dismiss = useCallback(() => {
     setDismissed(true);
@@ -94,7 +104,7 @@ export function ContactCtaPopup({
     }
   }, [reportId]);
 
-  const visible = shouldShowCtaPopup({ scrolledPastFindings, dwellElapsed, staticCtaVisible, dismissed });
+  const visible = shouldShowCtaPopup({ hasScrolledDown, dwellElapsed, staticCtaVisible, dismissed });
 
   // Trigger the slide-in on the frame after it becomes visible.
   useEffect(() => {
