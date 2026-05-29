@@ -539,7 +539,32 @@ export function ReportView({
             )}
 
             <section className="mt-8">
-              <h2 className="text-lg font-semibold">Findings &amp; action plan</h2>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold">Findings &amp; action plan</h2>
+                {report.status === "done" && !demo && (
+                  <span className="inline-flex items-center gap-2">
+                    <a
+                      href={`/api/audit/${report.id}/export?format=md`}
+                      download
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:border-accent/60 hover:text-foreground"
+                      title="Download this audit as an LLM-friendly Markdown file - ready to paste into an AI IDE or agent"
+                    >
+                      <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                        <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                      Export for AI
+                    </a>
+                    <a
+                      href={`/api/audit/${report.id}/export?format=json`}
+                      download
+                      className="text-xs text-muted-foreground underline-offset-2 transition hover:text-foreground hover:underline"
+                      title="Download the same audit as structured JSON"
+                    >
+                      JSON
+                    </a>
+                  </span>
+                )}
+              </div>
               <p className="mt-1 text-sm text-muted-foreground">
                 Sorted by impact vs. effort - the top of the list is where to start. Click any item for why it
                 matters and how to fix it. A &quot;needs approval&quot; tag means the fix touches consent or
