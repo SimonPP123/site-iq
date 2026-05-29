@@ -114,7 +114,7 @@ cands.sort((a, b) => score(b) - score(a));
 // The audit's job is to score a public-facing site, not to enumerate admin / staging / customer-area
 // paths. If Firecrawl follows internal navigation into one of these (common on misconfigured WP /
 // Shopify), we'd persist the path in evidence.failing AND in the new pages list - a credible data-
-// exfiltration risk if the user shares the report with a third party (partner prospect, beta tester).
+// exfiltration risk if the user shares the report with a third party (e.g. a beta tester).
 // The filter is conservative (false-positives are far cheaper than false-negatives): when in doubt,
 // SKIP and surface the count to the user via pagesExcluded so it's not silent.
 const SENSITIVE_PATH_RE = /\/(?:wp-admin|wp-login|wp-json|administrator|admin|login|signin|sign-in|signup|sign-up|register|account(?:s)?|dashboard|customer(?:s)?|user(?:s)?|profile|settings|preferences|checkout|cart|orders?|invoice(?:s)?|preview|drafts?|staging|stage|dev|test|debug|server-status|phpmyadmin|\.git|\.env|\.well-known|api|graphql|internal|private|backup|tmp|cache)(?:\/|$|\?|#)/i;
