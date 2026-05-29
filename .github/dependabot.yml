@@ -47,6 +47,18 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "react-dom"
         update-types: ["version-update:semver-major"]
+      # Major bumps held pending upstream support / a dedicated upgrade (audit 2026-05-29):
+      # eslint 10 (eslint-config-next's bundled eslint-plugin-react not yet ESLint-10 compatible),
+      # vitest 4 (coverage threshold type + measurement changes), @vitejs/plugin-react 6 (needs Vite 8,
+      # coupled to vitest 4). Minor/patch of these still flow through.
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "vitest"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@vitest/*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@vitejs/plugin-react"
+        update-types: ["version-update:semver-major"]
 
     labels:
       - "dependencies"
