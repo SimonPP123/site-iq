@@ -20,6 +20,24 @@ const SCREENSHOT_OPTIONS = {
 // Threshold for pixel differences (0-1)
 const VISUAL_THRESHOLD = 0.1;
 
+// Suppress the cookie-consent banner before every navigation. It renders site-wide on the FIRST
+// visit (no stored choice), so without this it appears in every screenshot and diffs against the
+// baseline non-deterministically. addInitScript runs before page scripts on each navigation, so we
+// seed the same `siteiq-consent` localStorage record a returning visitor would have (an explicit
+// "reject all" - every category denied) => readConsent() finds a decision and the banner stays hidden.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    try {
+      window.localStorage.setItem(
+        'siteiq-consent',
+        JSON.stringify({ v: 1, all: false, cats: { analytics: false, functional: false, targeting: false }, ts: Date.now() }),
+      );
+    } catch {
+      /* localStorage blocked - banner would show, but that matches the pre-existing fallback */
+    }
+  });
+});
+
 test.describe('Visual Regression Tests', () => {
   test.describe('Homepage', () => {
     test('homepage matches baseline (light mode)', async ({ page }) => {
