@@ -35,6 +35,15 @@ test.beforeEach(async ({ page }) => {
     } catch {
       /* localStorage blocked - banner would show, but that matches the pre-existing fallback */
     }
+    // Hide the Next.js dev-tools overlay (the "N / 1 Issue" badge). The visual suite runs against
+    // `next dev`, and the badge lives in a <nextjs-portal> custom element that `devIndicators:false`
+    // does NOT remove; it would render into every screenshot and (because its issue count / mount
+    // timing varies between runs) cause flaky diffs. Inject a hiding style once the DOM exists.
+    document.addEventListener('DOMContentLoaded', () => {
+      const s = document.createElement('style');
+      s.textContent = 'nextjs-portal,[data-nextjs-toast],[data-nextjs-dev-tools-button]{display:none!important}';
+      document.head?.appendChild(s);
+    });
   });
 });
 
