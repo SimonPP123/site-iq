@@ -15,6 +15,7 @@ import { SiteHeader } from "@/components/SiteHeader";
 import { CHECK_INFO } from "@/lib/audit/checkInfo";
 import { WhatWeChecked } from "./WhatWeChecked";
 import { ContactCTA } from "./ContactCTA";
+import { ContactCtaPopup } from "./ContactCtaPopup";
 import { CrawledPagesSection } from "./CrawledPagesSection";
 import type { CheckResult, DimensionResult, AuditResult, FailingPage, FailureReason } from "@/lib/audit/types";
 
@@ -658,6 +659,10 @@ export function ReportView({
               })()}
             </section>
 
+            {/* Sentinel: when this scrolls into view the reader has passed the findings - one of the
+                two conditions (with a dwell timer) that arms the ContactCtaPopup nudge below. */}
+            <div id="report-findings-end" aria-hidden="true" />
+
             <WhatWeChecked dimensions={result.dimensions} />
 
             {report.status === "done" &&
@@ -680,7 +685,17 @@ export function ReportView({
                 <ChatPanel reportId={report.id} domain={report.domain} />
               ))}
 
-            {report.status === "done" && !demo && <ContactCTA domain={report.domain} />}
+            {report.status === "done" && !demo && (
+              <>
+                {/* Static end-of-report CTA (id lets the popup suppress itself while this is on screen). */}
+                <div id="report-static-cta">
+                  <ContactCTA domain={report.domain} />
+                </div>
+                {/* Non-blocking slide-in nudge: fires after the reader has scrolled past the findings
+                    AND dwelled ~20s, but not while the static CTA above is already visible. */}
+                <ContactCtaPopup domain={report.domain} reportId={report.id} />
+              </>
+            )}
           </>
         )}
       </main>
