@@ -2,9 +2,9 @@
 
 import { useState, useEffect, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
-import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { SiteHeader } from "@/components/SiteHeader";
+import { HeroScoreEmblem } from "@/components/HeroScoreEmblem";
 import { normalizeDomain } from "@/lib/domain";
 import { trackAuditStarted } from "@/lib/analytics";
 
@@ -286,14 +286,7 @@ export default function Home() {
       <main id="main-content" className="flex-1">
         {/* ---------- 1. HERO ---------- */}
         <section className="mx-auto flex w-full max-w-3xl flex-col items-center px-6 pb-10 pt-16 text-center sm:pt-24">
-          <Image
-            src="/hero-audit.png"
-            alt=""
-            width={224}
-            height={224}
-            priority
-            className="mb-5 h-32 w-32 select-none sm:h-44 sm:w-44"
-          />
+          <HeroScoreEmblem className="mb-5 h-32 w-32 select-none sm:h-44 sm:w-44" />
           <span className="inline-flex items-center gap-2 rounded-full border border-border bg-card/60 px-3 py-1 text-xs text-muted-foreground">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> A full website report card in about 2 minutes
           </span>
