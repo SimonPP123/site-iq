@@ -45,14 +45,14 @@ jobs:
           CI: true
         continue-on-error: true
 
-      - name: Commit baselines
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add tests/visual.spec.ts-snapshots
-          if git diff --staged --quiet; then
-            echo "No baseline changes to commit."
-          else
-            git commit -m "test(visual): regenerate Linux baselines [skip ci]"
-            git push
-          fi
+      # main is a protected branch (requires the "CI Success" check), so the github-actions bot cannot
+      # push directly. Publish the freshly-generated Linux baselines as an artifact instead; a
+      # maintainer downloads it and commits the PNGs (an admin push bypasses the protection). This
+      # keeps the workflow green and the baseline change reviewable.
+      - name: Upload regenerated baselines
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-baselines-linux
+          path: tests/visual.spec.ts-snapshots/
+          retention-days: 7
+          if-no-files-found: error
