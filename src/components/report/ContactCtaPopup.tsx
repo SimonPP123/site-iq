@@ -9,9 +9,12 @@ import { trackContactCtaClick } from "@/lib/analytics";
  * reader has had a moment to explore. It appears once the reader has scrolled down into the report
  * (any meaningful downward scroll) AND has spent ~10s on the page - and it stays eligible even if
  * they then scroll back to the top, because the scroll signal LATCHES. It never shows while the
- * static end-of-report CTA is already on screen (no double-nudge). Dismissable (X / Esc), remembered
- * per-report in localStorage so it never re-pops, and suppressed once dismissed or clicked. Shown on
- * real reports only - the caller gates it on `status === "done" && !demo`, like the static <ContactCTA>.
+ * static end-of-report CTA is already on screen (no double-nudge).
+ *
+ * Shown ONCE PER BROWSER SESSION, across all reports: once it has appeared (or been dismissed) it
+ * stays quiet for the rest of the session - tracked in sessionStorage, which clears when the tab /
+ * session ends, so a fresh visit sees it again. Dismissable (X / Esc). Shown on real reports only -
+ * the caller gates it on `status === "done" && !demo`, like the static <ContactCTA>.
  *
  * The trigger predicate is split out as a pure function so it can be unit-tested without a DOM.
  */
@@ -28,35 +31,36 @@ const DWELL_MS = 10_000; // give the reader ~10s with the report before nudging
 // "Some scroll down" - a few wheel ticks. Low enough that any real engagement arms it, high enough
 // that an accidental jog of the page does not. Once crossed it latches (see the effect below).
 const SCROLL_THRESHOLD_PX = 300;
-const dismissKey = (reportId: string) => `siteiq-cta-dismissed-${reportId}`;
+// Session-scoped, single key (not per-report, not permanent): the nudge shows once per browsing
+// session across any report. sessionStorage clears when the tab/session ends, so a return visit
+// sees it again. To re-trigger while testing: open a new tab or clear this key.
+const SESSION_SEEN_KEY = "siteiq-cta-seen";
 
 export function ContactCtaPopup({
   domain,
-  reportId,
   staticCtaId = "report-static-cta",
 }: {
   domain: string;
-  reportId: string;
   staticCtaId?: string;
 }) {
   const [hasScrolledDown, setHasScrolledDown] = useState(false);
   const [dwellElapsed, setDwellElapsed] = useState(false);
   const [staticCtaVisible, setStaticCtaVisible] = useState(false);
-  // Start "dismissed" so nothing can flash before we've read prior state from localStorage.
+  // Start "dismissed" so nothing can flash before we've read prior session state.
   const [dismissed, setDismissed] = useState(true);
   // Drives the entrance transition (mounted=false on first paint, flipped true next frame).
   const [entered, setEntered] = useState(false);
 
-  // Read any prior dismissal once (a previous dismiss OR a previous click both set this).
+  // Has the nudge already been shown/dismissed earlier in THIS session? (once-per-session gate)
   useEffect(() => {
-    let prior = false;
+    let seen = false;
     try {
-      prior = window.localStorage.getItem(dismissKey(reportId)) === "1";
+      seen = window.sessionStorage.getItem(SESSION_SEEN_KEY) === "1";
     } catch {
-      /* storage blocked - treat as not-dismissed so the nudge can still show */
+      /* storage blocked - treat as not-seen so the nudge can still show */
     }
-    setDismissed(prior);
-  }, [reportId]);
+    setDismissed(seen);
+  }, []);
 
   // Dwell timer.
   useEffect(() => {
@@ -95,23 +99,29 @@ export function ContactCtaPopup({
     return () => io.disconnect();
   }, [staticCtaId]);
 
+  const markSeen = useCallback(() => {
+    try {
+      window.sessionStorage.setItem(SESSION_SEEN_KEY, "1");
+    } catch {
+      /* storage blocked - it just won't be remembered; may re-show on the next navigation */
+    }
+  }, []);
+
   const dismiss = useCallback(() => {
     setDismissed(true);
-    try {
-      window.localStorage.setItem(dismissKey(reportId), "1");
-    } catch {
-      /* storage blocked - it just won't be remembered across reloads */
-    }
-  }, [reportId]);
+    markSeen();
+  }, [markSeen]);
 
   const visible = shouldShowCtaPopup({ hasScrolledDown, dwellElapsed, staticCtaVisible, dismissed });
 
-  // Trigger the slide-in on the frame after it becomes visible.
+  // Once it actually shows, mark the session as seen (so it will not reappear on the next report this
+  // session) and trigger the slide-in on the next frame.
   useEffect(() => {
     if (!visible) return;
+    markSeen();
     const id = requestAnimationFrame(() => setEntered(true));
     return () => cancelAnimationFrame(id);
-  }, [visible]);
+  }, [visible, markSeen]);
 
   // Esc closes it (only while shown).
   useEffect(() => {
@@ -153,7 +163,7 @@ export function ContactCtaPopup({
         href={`/contact?topic=audit&domain=${encodeURIComponent(domain)}`}
         onClick={() => {
           trackContactCtaClick({ audit_domain: domain });
-          dismiss(); // clicking is a conversion - don't nudge again
+          dismiss(); // clicking is a conversion - don't nudge again this session
         }}
         className="mt-3 inline-flex rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition hover:opacity-90"
       >

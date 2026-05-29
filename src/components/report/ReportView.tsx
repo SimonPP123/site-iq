@@ -687,9 +687,9 @@ export function ReportView({
                 <div id="report-static-cta">
                   <ContactCTA domain={report.domain} />
                 </div>
-                {/* Non-blocking slide-in nudge: fires after the reader has scrolled down a bit AND
-                    dwelled ~10s, but not while the static CTA above is already visible. */}
-                <ContactCtaPopup domain={report.domain} reportId={report.id} />
+                {/* Non-blocking slide-in nudge: fires once per session after the reader has scrolled
+                    down a bit AND dwelled ~10s, but not while the static CTA above is already visible. */}
+                <ContactCtaPopup domain={report.domain} />
               </>
             )}
           </>
