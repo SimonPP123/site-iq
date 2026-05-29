@@ -49,6 +49,11 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   output: "standalone",
   reactCompiler: true,
+  // Hide the Next.js dev-mode indicator (the "N / issues" badge). It is a local-dev overlay with no
+  // production effect, but the Playwright visual-regression suite runs against `next dev`, so the
+  // badge was rendering into every screenshot and diffing against the baselines. Off = deterministic
+  // shots (and one less distraction in local dev).
+  devIndicators: false,
   // Tree-shake barrel-heavy libraries so only the icons/components actually used are bundled.
   experimental: {
     optimizePackageImports: ["recharts", "react-markdown", "remark-gfm"],
