@@ -111,10 +111,10 @@ describe("POST /api/audit", () => {
     expect(res.status).toBe(400);
   });
 
-  it("proceeds when DNS times out (fail-open) and still reaches 202", async () => {
+  it("fails closed (503) when DNS times out - cannot verify the host is public (SSRF defense)", async () => {
     h.lookup.mockRejectedValue(new Error("dns-timeout"));
     const res = await POST(req({ domain: "slow-dns.example" }));
-    expect(res.status).toBe(202);
+    expect(res.status).toBe(503);
   });
 
   it("returns 400 when the domain resolves to a private IP (SSRF guard)", async () => {

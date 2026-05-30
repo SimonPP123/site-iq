@@ -87,24 +87,29 @@ export async function POST(req: Request) {
 
   // A syntactically-valid domain can still be non-existent: a fake TLD (e.g. "тест.цом" -> xn--e1aybc.
   // xn--l1adx), a typo, or a dead site. Resolve it via DNS BEFORE spending a free-plan credit + a
-  // ~2-minute audit on something that can't be crawled. Fail open on a slow/transient resolver so a
-  // real domain is never blocked by a DNS hiccup.
+  // ~2-minute audit on something that can't be crawled - AND so the SSRF guard below can vet the
+  // resolved IPs. We FAIL CLOSED on a resolve timeout: if we cannot resolve (and therefore cannot
+  // verify the host is public), we refuse rather than crawl an unverified target. The 5s budget makes
+  // a false timeout on a real domain rare; the caller can retry.
   let dnsTimer: ReturnType<typeof setTimeout> | undefined;
   let addresses: { address: string; family: number }[] = [];
   try {
     addresses = await Promise.race([
       dns.lookup(domain, { all: true }),
       new Promise<never>((_, reject) => {
-        dnsTimer = setTimeout(() => reject(new Error("dns-timeout")), 3000);
+        dnsTimer = setTimeout(() => reject(new Error("dns-timeout")), 5000);
       }),
     ]);
   } catch (err) {
-    if ((err as Error).message !== "dns-timeout") {
-      return NextResponse.json(
-        { error: "We couldn't find that domain - please check the spelling (e.g. example.com)." },
-        { status: 400 },
-      );
-    }
+    const isTimeout = (err as Error).message === "dns-timeout";
+    return NextResponse.json(
+      {
+        error: isTimeout
+          ? "We couldn't verify that domain in time - please try again in a moment."
+          : "We couldn't find that domain - please check the spelling (e.g. example.com).",
+      },
+      { status: isTimeout ? 503 : 400 },
+    );
   } finally {
     if (dnsTimer) clearTimeout(dnsTimer);
   }
@@ -112,9 +117,10 @@ export async function POST(req: Request) {
   // SSRF guard: normalizeDomain() rejects literal IPs and localhost, but a *public hostname* can still
   // resolve to an internal address (e.g. evil.example.com -> 169.254.169.254 cloud metadata, or
   // 127.0.0.1). Refuse the audit when ANY resolved address is non-public, since the crawler fetches
-  // this host server-side. (On a dns-timeout we resolved nothing and fail open above; a determined
-  // attacker could still DNS-rebind to a private IP after this check - the n8n crawler should also
-  // refuse non-public targets as defense-in-depth.)
+  // this host server-side. We now fail closed on a resolve timeout (above), so we never reach here
+  // unverified. A determined attacker could still DNS-rebind AFTER this check, but the actual fetch is
+  // performed by Firecrawl from its own egress (which has its own internal-address protections and
+  // cannot reach our private network), so the residual rebinding window does not expose our infra.
   if (addresses.length > 0 && addresses.some((a) => isPrivateIp(a.address))) {
     return NextResponse.json(
       { error: "That domain resolves to a private or reserved address, so it can't be audited." },
