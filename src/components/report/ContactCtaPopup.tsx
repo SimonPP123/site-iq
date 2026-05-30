@@ -50,6 +50,9 @@ export function ContactCtaPopup({
   const [dismissed, setDismissed] = useState(true);
   // Drives the entrance transition (mounted=false on first paint, flipped true next frame).
   const [entered, setEntered] = useState(false);
+  // Latches true the first time the show-conditions hold, so the nudge does NOT re-hide/re-show as the
+  // static CTA scrolls in and out of view (no flicker); once revealed it stays until dismissed.
+  const [revealed, setRevealed] = useState(false);
 
   // Has the nudge already been shown/dismissed earlier in THIS session? (once-per-session gate)
   useEffect(() => {
@@ -112,16 +115,24 @@ export function ContactCtaPopup({
     markSeen();
   }, [markSeen]);
 
-  const visible = shouldShowCtaPopup({ hasScrolledDown, dwellElapsed, staticCtaVisible, dismissed });
+  // The 4-signal predicate is the ARM condition that gates the FIRST reveal (staticCtaVisible only
+  // suppresses that first show). Once `revealed` latches, the nudge stays until dismissed.
+  const armed = shouldShowCtaPopup({ hasScrolledDown, dwellElapsed, staticCtaVisible, dismissed });
+  useEffect(() => {
+    if (armed && !revealed) {
+      setRevealed(true);
+      markSeen(); // the first reveal is the once-per-session appearance
+    }
+  }, [armed, revealed, markSeen]);
+  const visible = revealed && !dismissed;
 
-  // Once it actually shows, mark the session as seen (so it will not reappear on the next report this
-  // session) and trigger the slide-in on the next frame.
+  // Trigger the slide-in on the frame after it becomes visible. (markSeen happens at reveal-time
+  // above, so it is not repeated here.)
   useEffect(() => {
     if (!visible) return;
-    markSeen();
     const id = requestAnimationFrame(() => setEntered(true));
     return () => cancelAnimationFrame(id);
-  }, [visible, markSeen]);
+  }, [visible]);
 
   // Esc closes it (only while shown).
   useEffect(() => {

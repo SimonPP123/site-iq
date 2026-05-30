@@ -195,6 +195,22 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
             detect --source=/repo --no-git --config=/repo/.gitleaks.toml --redact --exit-code=1
+      # Forbidden partner/client names must never appear in this world-readable repo (NDA). The names
+      # are base64-encoded so this gate file itself never contains/leaks them; decoded at runtime and
+      # grepped against the tracked tree (gitleaks matches credential regexes, not plain names). Add a
+      # name with: printf '%s' NAME | base64
+      - name: Forbidden-names guard
+        run: |
+          pattern=""
+          for e in ZHJveGlj dmVydG9kaWdpdGFs; do
+            name=$(printf '%s' "$e" | base64 -d)
+            pattern="${pattern:+$pattern|}$name"
+          done
+          if git grep -i -n -E "$pattern" -- . ':(exclude).github/workflows/ci.yml'; then
+            echo "::error::A forbidden partner/client name appears in tracked files (matches above). Scrub it before merging."
+            exit 1
+          fi
+          echo "Forbidden-names guard: clean."
 
   # Final status gate. Required jobs are the ones that run on every push and must be green; e2e is
   # opt-in (see above) and Lighthouse is advisory, so neither gates the build.
