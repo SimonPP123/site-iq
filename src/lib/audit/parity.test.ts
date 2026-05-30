@@ -125,7 +125,6 @@ describe("n8n <-> TypeScript parity (site-iq-audit.json)", () => {
     // `const input = $input.first().json; ... return [{ json: { ..., result } }];`
     const runScoreJs = (checks: CheckResult[]) => {
       const $input = { first: () => ({ json: { reportId: "r", domain: "d", pagesSampled: 1, pagesAttempted: 1, checks } }) };
-      // eslint-disable-next-line @typescript-eslint/no-implied-eval
       const fn = new Function("$input", scoreCode) as (i: typeof $input) => Array<{ json: { result: { overall: number; grade: string; dimensions: { id: string; score: number }[] } } }>;
       return fn($input)[0].json.result;
     };
