@@ -56,6 +56,9 @@ export interface ExportActionItem {
   fix?: string;
   example?: string;
   affectedPages?: { path: string; reason?: string }[];
+  /** Count of further failing pages beyond `affectedPages` (the evidence cap), so the export does not
+   *  silently imply only N pages were affected when more were. */
+  affectedMore?: number;
 }
 
 export interface ExportModel {
@@ -148,7 +151,7 @@ function toExportDimension(d: DimensionResult): ExportDimension {
     rawScore: na ? null : d.rawScore,
     capped: d.capped === true,
     notApplicable: na,
-    checks: d.checks.map(toExportCheck),
+    checks: (d.checks ?? []).map(toExportCheck),
   };
 }
 
@@ -157,11 +160,13 @@ export function buildExportModel(result: AuditResult, opts: { domain: string; ge
   const checkById = new Map<string, CheckResult>();
   for (const d of result.dimensions ?? []) for (const c of d.checks ?? []) checkById.set(c.id, c);
 
-  const actionPlan: ExportActionItem[] = [...(result.actionPlan ?? [])]
-    .sort((a, b) => b.priority - a.priority)
-    .map((a, i) => {
+  // result.actionPlan is already in the engine's canonical order (priority, then the severity
+  // tiebreaker); keep it verbatim so the export rank matches the report UI exactly. Re-sorting here
+  // on priority alone would drop the tiebreaker and let equal-priority items diverge from the UI.
+  const actionPlan: ExportActionItem[] = (result.actionPlan ?? []).map((a, i) => {
       const info = CHECK_INFO[a.checkId];
-      const failing = (checkById.get(a.checkId)?.evidence?.failing ?? []).map((f) => ({
+      const check = checkById.get(a.checkId);
+      const failing = (check?.evidence?.failing ?? []).map((f) => ({
         path: f.path,
         reason: failureReasonText(f.reason),
       }));
@@ -178,6 +183,7 @@ export function buildExportModel(result: AuditResult, opts: { domain: string; ge
         fix: info?.fix,
         example: info?.example,
         affectedPages: failing.length ? failing : undefined,
+        affectedMore: check?.evidence?.more || undefined,
       };
     });
 
@@ -250,7 +256,7 @@ export function toMarkdown(m: ExportModel): string {
       if (a.why) L.push(`- Why it matters: ${a.why}`);
       if (a.fix) L.push(`- How to fix: ${a.fix}`);
       if (a.example) L.push(`- Example: \`${a.example}\``);
-      L.push(`- Affected pages: ${pagesLine(a.affectedPages)}`);
+      L.push(`- Affected pages: ${pagesLine(a.affectedPages)}${a.affectedMore ? ` (+${a.affectedMore} more)` : ""}`);
       L.push("");
     }
   }

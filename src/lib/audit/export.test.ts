@@ -103,6 +103,18 @@ describe("toMarkdown", () => {
     expect(md).toContain("[FAIL] S2 Meta descriptions");
     expect(md).toContain("/about (too short (40 < 70))");
     expect(md).toContain("Could not crawl /old: returned a 4xx error");
+    expect(md).toContain("(+1 more)"); // S2 evidence.more === 1 must surface, not be silently dropped
+  });
+
+  it("does not throw on a dimension missing its checks array (degraded n8n payload)", () => {
+    const r = {
+      overall: 40,
+      grade: "D",
+      capped: false,
+      dimensions: [{ id: "seo", label: "SEO", score: 40, rawScore: 40, capped: false }],
+      actionPlan: [],
+    } as unknown as AuditResult;
+    expect(() => toMarkdown(buildExportModel(r, { domain: "x.com", generatedAt: GEN }))).not.toThrow();
   });
 
   it("states that nothing needs fixing when the action plan is empty", () => {

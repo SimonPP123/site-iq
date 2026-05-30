@@ -42,7 +42,7 @@ const meta = (p: CrawledPage) => p.metadata ?? {};
 const text = (p: CrawledPage) =>
   (p.markdown ?? html(p).replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
 const words = (s: string) => s.split(/\s+/).filter(Boolean).length;
-const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
+const clamp01 = (n: number) => (Number.isNaN(n) ? 0 : Math.max(0, Math.min(1, n)));
 
 /** Cross-page uniqueness: fraction of NON-EMPTY values that occur exactly once. Returns null (N/A)
  *  when there are fewer than 2 non-empty values - uniqueness is not assessable, and crucially an
@@ -198,7 +198,6 @@ export function runAudit(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {})
         // Fail-open: a diagnostic that throws is a bug in the rule OR a corrupt page, NOT a check
         // failure. Counting it as pass keeps a single broken page from tanking a real signal.
         // Surface it for debugging.
-        // eslint-disable-next-line no-console
         console.error("[covR] diagnostic threw for", path, err);
         pass++;
         continue;
@@ -207,21 +206,6 @@ export function runAudit(pages: CrawledPage[], rootUrl = "", aux: AuditAux = {})
       else {
         const fp: FailingPage = { path, reason: sanitizeReason(reason) };
         failing.push(fp);
-        pagesWithIssuesSet.add(path); // accumulated BEFORE mkEvidence's EVID_CAP truncation
-      }
-    }
-    return { r: clamp01(pass / n), failing };
-  };
-  /** Legacy boolean coverage. Returns failing pages with `reason: undefined` - kept so the few
-   *  remaining boolean checks compile without churn. New checks SHOULD use `covR`. */
-  const cov = (fn: (p: CrawledPage) => boolean): CovEval => {
-    const failing: FailingPage[] = [];
-    let pass = 0;
-    for (const p of sample) {
-      if (fn(p)) pass++;
-      else {
-        const path = pathOf(meta(p).sourceURL ?? rootUrl);
-        failing.push({ path });
         pagesWithIssuesSet.add(path); // accumulated BEFORE mkEvidence's EVID_CAP truncation
       }
     }

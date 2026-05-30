@@ -27,9 +27,11 @@ beforeEach(() => {
   h.isAdminEmail.mockReturnValue(true);
   h.send.mockResolvedValue({ data: { id: "email-1" }, error: null });
   process.env.RESEND_API_KEY = "re_test";
+  process.env.EMAIL_FROM = "Site IQ <noreply@monkata.ai>";
 });
 afterEach(() => {
   delete process.env.RESEND_API_KEY;
+  delete process.env.EMAIL_FROM;
 });
 
 describe("POST /api/email", () => {

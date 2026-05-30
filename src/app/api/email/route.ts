@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
 
         // Rate limiting - 10 emails per minute per IP
         const clientIp = getClientIp(request.headers);
-        const rateLimitResult = await rateLimit(clientIp, 10, 60000);
+        const rateLimitResult = await rateLimit(`email:${clientIp}`, 10, 60000);
         if (!rateLimitResult.success) {
             return NextResponse.json(
                 { error: "Too many requests. Please try again later." },
@@ -58,8 +58,10 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // Check API key
-        if (!process.env.RESEND_API_KEY) {
+        // Config: require both the API key AND a branded sender. Never fall back to a public sandbox
+        // sender (harms deliverability + is off-brand) - fail closed if either is missing.
+        const emailFrom = process.env.EMAIL_FROM;
+        if (!process.env.RESEND_API_KEY || !emailFrom) {
             return NextResponse.json(
                 { error: "Email service not configured" },
                 { status: 503 }
@@ -87,7 +89,7 @@ export async function POST(request: NextRequest) {
         }
 
         const { data, error } = await resendClient.emails.send({
-            from: process.env.EMAIL_FROM || "Site IQ <onboarding@resend.dev>",
+            from: emailFrom,
             to: [to],
             subject,
             html,
